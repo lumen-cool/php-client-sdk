@@ -119,7 +119,6 @@ $vault = $resolver->resolveFromUrl('https://fsn1-1.files.lumen.cool/v1/files');
 ```bash
 composer install
 composer validate
-php -l src/LumenClient.php
 ```
 
-Add your own PHPUnit suites under `tests/` (a `phpunit.xml.dist` is not bundled yet).
+No tests are bundled yet; you can add your own in the `tests/` directory.
