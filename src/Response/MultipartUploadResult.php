@@ -6,32 +6,22 @@ namespace Lumen\Sdk\Response;
 
 final class MultipartUploadResult
 {
-    private ?FileResource $file;
+    private FileResource $file;
 
     /**
      * @param array<string, mixed> $attributes
      */
     public function __construct(private array $attributes)
     {
-        $file = $attributes['file'] ?? null;
-        $this->file = is_array($file) ? new FileResource($file) : null;
+        $this->file = new FileResource($attributes['file']);
     }
 
-    public function getId(): ?string
+    public function getId(): string
     {
-        $id = $this->attributes['id'] ?? null;
-
-        return $id !== null ? (string) $id : null;
+        return $this->attributes['id'];
     }
 
-    public function getUploadId(): ?string
-    {
-        $uploadId = $this->attributes['upload_id'] ?? null;
-
-        return $uploadId !== null ? (string) $uploadId : null;
-    }
-
-    public function getFile(): ?FileResource
+    public function getFile(): FileResource
     {
         return $this->file;
     }

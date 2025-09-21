@@ -17,25 +17,12 @@ final class MultipartUploadSession
         private Vault $vault,
         private array $attributes,
     ) {
-        if (!isset($this->attributes['id'])) {
-            $this->attributes['id'] = $this->id;
-        }
-
-        if (!isset($this->attributes['drive_id'])) {
-            $this->attributes['drive_id'] = $this->driveId;
-        }
+        //
     }
 
     public function getId(): string
     {
         return $this->id;
-    }
-
-    public function getUploadId(): string
-    {
-        $uploadId = $this->attributes['upload_id'] ?? $this->attributes['id'] ?? $this->id;
-
-        return (string) $uploadId;
     }
 
     public function getDriveId(): string

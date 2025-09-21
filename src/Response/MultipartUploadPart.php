@@ -37,4 +37,9 @@ final class MultipartUploadPart
     {
         return $this->attributes;
     }
+
+    public function getEtagWithoutQuotes(): string
+    {
+        return trim($this->etag, '"');
+    }
 }

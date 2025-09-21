@@ -27,9 +27,10 @@ final class LumenClient
 
     public function __construct(
         private VaultResolverInterface $vaultResolver,
-        ?ClientInterface $httpClient = null,
-        array $defaultHeaders = [],
-    ) {
+        ?ClientInterface               $httpClient = null,
+        array                          $defaultHeaders = [],
+    )
+    {
         $this->httpClient = $httpClient ?? new GuzzleClient();
         $this->defaultHeaders = array_merge([
             'Accept' => 'application/json',
@@ -47,6 +48,33 @@ final class LumenClient
     public function clearVault(): void
     {
         $this->defaultVault = null;
+    }
+
+    /**
+     * @param array{
+     *     parents?: string[],
+     *     created_at?: string,
+     *     modified_at?: string,
+     *     mime_type?: string,
+     *     etag?: string,
+     *     chunk_size?: int,
+     *     headers?: array<string, string>,
+     *     on_progress?: callable(int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void,
+     *     vault?: string
+     * } $options
+     */
+    public function upload(string $filePath, string $driveId, array $options = []): FileResource
+    {
+        $fileSize = filesize($filePath);
+        if ($fileSize === false) {
+            throw new RuntimeException(sprintf('Unable to determine size for "%s".', $filePath));
+        }
+
+        if ($fileSize <= self::DEFAULT_CHUNK_SIZE) {
+            return $this->simpleUpload($filePath, $driveId, $options);
+        }
+
+        return $this->multipartUpload($filePath, $driveId, $options)->getFile();
     }
 
     /**
@@ -138,8 +166,8 @@ final class LumenClient
                 }
 
                 $multipart[] = [
-                    'name' => (string) $key,
-                    'contents' => (string) $value,
+                    'name' => (string)$key,
+                    'contents' => (string)$value,
                 ];
             }
         }
@@ -150,7 +178,9 @@ final class LumenClient
                 'multipart' => $multipart,
             ]);
         } finally {
-            fclose($fileStream);
+            if (is_resource($fileStream)) {
+                fclose($fileStream);
+            }
         }
 
         return new FileResource($this->decodeJson($response));
@@ -182,7 +212,7 @@ final class LumenClient
             'parents' => $options['parents'] ?? null,
             'created_at' => $options['created_at'] ?? null,
             'modified_at' => $options['modified_at'] ?? null,
-        ], static fn ($value) => $value !== null);
+        ], static fn($value) => $value !== null);
 
         $response = $this->request('POST', $vault, '/v1/files/multipart-upload/initialize', [
             'headers' => $options['headers'] ?? [],
@@ -191,16 +221,9 @@ final class LumenClient
 
         $data = $this->decodeJson($response);
 
-        $id = $data['id'] ?? $data['upload_id'] ?? null;
-        if (!is_string($id) || $id === '') {
-            throw new RuntimeException('Upload session did not return an identifier.');
-        }
-
-        $driveFromResponse = isset($data['drive_id']) ? (string) $data['drive_id'] : $normalizedDriveId;
-
         return new MultipartUploadSession(
-            id: $id,
-            driveId: $driveFromResponse,
+            id: $data['id'],
+            driveId: $data['drive_id'],
             vault: $vault,
             attributes: $data,
         );
@@ -213,15 +236,16 @@ final class LumenClient
      * } $options
      */
     public function uploadMultipartPart(
-        MultipartUploadSession|string $sessionOrUploadId,
-        int $partNumber,
-        string $chunkContents,
-        ?string $etag = null,
-        array $options = []
-    ): MultipartUploadPart {
+        MultipartUploadSession|string $sessionOrSessionId,
+        int                           $partNumber,
+        string                        $chunkContents,
+        ?string                       $etag = null,
+        array                         $options = []
+    ): MultipartUploadPart
+    {
         $headers = $options['headers'] ?? [];
-        $vault = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getVault() : null;
-        $uploadId = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getUploadId() : $sessionOrUploadId;
+        $vault = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getVault() : null;
+        $sessionId = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getId() : $sessionOrSessionId;
 
         $vault = $this->resolveVault($options['vault'] ?? null, $vault);
 
@@ -233,7 +257,7 @@ final class LumenClient
         $multipart = [
             [
                 'name' => 'part_number',
-                'contents' => (string) $partNumber,
+                'contents' => (string)$partNumber,
             ],
             [
                 'name' => 'file',
@@ -246,7 +270,7 @@ final class LumenClient
             ],
         ];
 
-        $response = $this->request('POST', $vault, sprintf('/v1/files/multipart-upload/%s/parts', $uploadId), [
+        $response = $this->request('POST', $vault, sprintf('/v1/files/multipart-upload/%s/parts', $sessionId), [
             'headers' => $headers,
             'multipart' => $multipart,
         ]);
@@ -254,8 +278,8 @@ final class LumenClient
         $data = $this->decodeJson($response);
 
         return new MultipartUploadPart(
-            partNumber: isset($data['part_number']) ? (int) $data['part_number'] : $partNumber,
-            etag: isset($data['etag']) ? (string) $data['etag'] : $etag,
+            partNumber: isset($data['part_number']) ? (int)$data['part_number'] : $partNumber,
+            etag: isset($data['etag']) ? (string)$data['etag'] : $etag,
             attributes: $data,
         );
     }
@@ -268,14 +292,15 @@ final class LumenClient
      * } $options
      */
     public function completeMultipartUpload(
-        MultipartUploadSession|string $sessionOrUploadId,
-        array $parts,
-        string $overallEtag,
-        array $options = []
-    ): MultipartUploadResult {
+        MultipartUploadSession|string $sessionOrSessionId,
+        array                         $parts,
+        string                        $overallEtag,
+        array                         $options = []
+    ): MultipartUploadResult
+    {
         $headers = $options['headers'] ?? [];
-        $vault = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getVault() : null;
-        $uploadId = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getUploadId() : $sessionOrUploadId;
+        $vault = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getVault() : null;
+        $sessionId = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getId() : $sessionOrSessionId;
 
         $vault = $this->resolveVault($options['vault'] ?? null, $vault);
 
@@ -284,7 +309,7 @@ final class LumenClient
             'etag' => $overallEtag,
         ];
 
-        $response = $this->request('POST', $vault, sprintf('/v1/files/multipart-upload/%s/complete', $uploadId), [
+        $response = $this->request('POST', $vault, sprintf('/v1/files/multipart-upload/%s/complete', $sessionId), [
             'headers' => $headers,
             'json' => $payload,
         ]);
@@ -298,15 +323,15 @@ final class LumenClient
      *     vault?: string
      * } $options
      */
-    public function abortMultipartUpload(MultipartUploadSession|string $sessionOrUploadId, array $options = []): void
+    public function abortMultipartUpload(MultipartUploadSession|string $sessionOrSessionId, array $options = []): void
     {
         $headers = $options['headers'] ?? [];
-        $vault = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getVault() : null;
-        $uploadId = $sessionOrUploadId instanceof MultipartUploadSession ? $sessionOrUploadId->getUploadId() : $sessionOrUploadId;
+        $vault = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getVault() : null;
+        $sessionId = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getId() : $sessionOrSessionId;
 
         $vault = $this->resolveVault($options['vault'] ?? null, $vault);
 
-        $this->request('DELETE', $vault, sprintf('/v1/files/multipart-upload/%s/abort', $uploadId), [
+        $this->request('DELETE', $vault, sprintf('/v1/files/multipart-upload/%s/abort', $sessionId), [
             'headers' => $headers,
         ]);
     }
@@ -338,7 +363,7 @@ final class LumenClient
         $chunkSize = $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE;
         $mimeType = $options['mime_type'] ?? $this->detectMimeType($filePath);
 
-        $session = $this->initializeMultipartUpload($driveId, $fileName, (int) $fileSize, [
+        $session = $this->initializeMultipartUpload($driveId, $fileName, $fileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
             'parents' => $options['parents'] ?? [],
@@ -378,14 +403,14 @@ final class LumenClient
                 ]);
 
                 $parts[] = [
-                    'etag' => $partResponse->getEtag(),
+                    'etag' => $partResponse->getEtagWithoutQuotes(),
                     'part_number' => $partResponse->getPartNumber(),
                 ];
 
                 $bytesUploaded += strlen($chunk);
 
                 if (isset($options['on_progress']) && is_callable($options['on_progress'])) {
-                    $options['on_progress']($partNumber, $bytesUploaded - strlen($chunk), $bytesUploaded, (int) $fileSize);
+                    $options['on_progress']($partNumber, $bytesUploaded - strlen($chunk), $bytesUploaded, (int)$fileSize);
                 }
 
                 ++$partNumber;
@@ -457,7 +482,7 @@ final class LumenClient
      */
     private function decodeJson(ResponseInterface $response): array
     {
-        $contents = (string) $response->getBody();
+        $contents = (string)$response->getBody();
 
         /** @var array<string, mixed> $decoded */
         $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
