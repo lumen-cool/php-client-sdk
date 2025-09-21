@@ -119,8 +119,8 @@ final class LumenFilesClient
                 }
 
                 $multipart[] = [
-                    'name' => (string) $key,
-                    'contents' => (string) $value,
+                    'name' => (string)$key,
+                    'contents' => (string)$value,
                 ];
             }
         }
@@ -131,7 +131,9 @@ final class LumenFilesClient
                 'multipart' => $multipart,
             ]);
         } finally {
-            fclose($fileStream);
+            if (is_resource($fileStream)) {
+                fclose($fileStream);
+            }
         }
 
         return $this->decodeJson($response);
@@ -146,16 +148,17 @@ final class LumenFilesClient
      * @return array{id: string, file_name?: string, file_size?: int, mime_type?: string}
      */
     public function initializeMultipartUpload(
-        string $driveId,
-        string $fileName,
-        int $fileSize,
+        string  $driveId,
+        string  $fileName,
+        int     $fileSize,
         ?string $mimeType = null,
-        int $chunkSize = self::DEFAULT_CHUNK_SIZE,
-        array $parents = [],
+        int     $chunkSize = self::DEFAULT_CHUNK_SIZE,
+        array   $parents = [],
         ?string $createdAt = null,
         ?string $modifiedAt = null,
-        array $headers = []
-    ): array {
+        array   $headers = []
+    ): array
+    {
         $payload = array_filter([
             'drive_id' => $driveId,
             'file_name' => $fileName,
@@ -165,7 +168,7 @@ final class LumenFilesClient
             'parents' => $parents ?: null,
             'created_at' => $createdAt,
             'modified_at' => $modifiedAt,
-        ], static fn ($value) => $value !== null);
+        ], static fn($value) => $value !== null);
 
         $response = $this->httpClient->request('POST', '/v1/files/multipart-upload/initialize', [
             'headers' => $this->mergeHeaders($headers),
@@ -183,12 +186,13 @@ final class LumenFilesClient
      * @return array<string, mixed>
      */
     public function uploadMultipartPart(
-        string $uploadId,
-        int $partNumber,
-        string $chunkContents,
+        string  $uploadId,
+        int     $partNumber,
+        string  $chunkContents,
         ?string $etag = null,
-        array $headers = []
-    ): array {
+        array   $headers = []
+    ): array
+    {
         $etag ??= md5($chunkContents);
         if ($etag === false) {
             throw new RuntimeException('Unable to calculate MD5 hash for the provided chunk.');
@@ -197,7 +201,7 @@ final class LumenFilesClient
         $multipart = [
             [
                 'name' => 'part_number',
-                'contents' => (string) $partNumber,
+                'contents' => (string)$partNumber,
             ],
             [
                 'name' => 'file',
@@ -338,7 +342,9 @@ final class LumenFilesClient
                 ++$partNumber;
             }
         } finally {
-            fclose($handle);
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
         }
 
         if ($parts === []) {
@@ -396,7 +402,7 @@ final class LumenFilesClient
      */
     private function decodeJson(ResponseInterface $response): array
     {
-        $contents = (string) $response->getBody();
+        $contents = (string)$response->getBody();
 
         /** @var array<string, mixed> $decoded */
         $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
