@@ -1,6 +1,10 @@
-# Lumen Files PHP Client SDK
+# Lumen PHP Client SDK
 
-A lightweight PHP 8.2+ helper for uploading files to a Lumen Files drive. The client wraps the HTTP workflow described in the official documentation and provides both simple and multipart upload helpers.
+A lightweight PHP 8.2+ SDK for interacting with Lumen Files uploads. It provides:
+
+* A `LumenVaultResolver` that can hydrate vault definitions from the public registry and from custom overrides.
+* A `LumenClient` that automatically targets the right vault, either from a default selection or from the drive ID annotation (`{drive}-{vault}`).
+* Strongly-typed response objects for both simple and multipart uploads.
 
 ## Installation
 
@@ -8,67 +12,113 @@ A lightweight PHP 8.2+ helper for uploading files to a Lumen Files drive. The cl
 composer require lumen/php-client-sdk
 ```
 
-## Usage
+## Getting started
 
 ```php
 <?php
 
 require __DIR__ . '/vendor/autoload.php';
 
-use Lumen\Files\LumenFilesClient;
+use Lumen\Sdk\LumenClient;
+use Lumen\Sdk\LumenVaultResolver;
 
-$client = new LumenFilesClient('https://fsn1-1.files.lumen.cool', defaultHeaders: [
-    'Authorization' => 'Bearer YOUR_TOKEN',
-]);
+$resolver = new LumenVaultResolver();
+$resolver->loadFromRegistry('https://api.lumen.cool/v1/vaults');
+$resolver->addCustomVault('local', 'http://localhost:8000', name: 'Local development');
 
-// Simple upload (small files)
-$response = $client->simpleUpload(__DIR__ . '/photo.jpg', 'DRIVE_ID', [
-    'parents' => ['FOLDER_ID'],
-]);
+$client = new LumenClient(
+    vaultResolver: $resolver,
+    defaultHeaders: [
+        'Authorization' => 'Bearer YOUR_TOKEN',
+    ],
+);
 
-// Multipart upload (large files)
-$response = $client->multipartUpload(__DIR__ . '/movie.mp4', 'DRIVE_ID', [
+// Optional: set a default vault once
+$client->setVault('kw2');
+```
+
+### Simple upload
+
+```php
+use Lumen\Sdk\Response\FileResource;
+
+/** @var FileResource $file */
+$file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h');
+
+printf(
+    "Uploaded %s (%d bytes) to vault %s\n",
+    $file->getName(),
+    $file->getSize(),
+    $file->getVaultSlug(),
+);
+```
+
+If you prefer to embed the vault in the drive identifier, pass `"{drive}-{vault}"` as the `drive_id`. The client will split it automatically:
+
+```php
+$file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h-kw2');
+```
+
+### Multipart upload (automatic)
+
+```php
+use Lumen\Sdk\Response\MultipartUploadResult;
+
+/** @var MultipartUploadResult $result */
+$result = $client->multipartUpload(__DIR__ . '/movie.mp4', '01jh2tcnx48caj4wsdkjevtr2h', [
     'chunk_size' => 16 * 1024 * 1024,
-    'on_progress' => function (int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void {
+    'on_progress' => static function (int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void {
         printf("Uploaded part %d (%d/%d bytes)\n", $partNumber, $bytesUploaded, $totalBytes);
     },
 ]);
+
+$uploaded = $result->getFile();
 ```
 
-### Manual multipart control
-
-If you prefer to control the multipart flow yourself you can use the lower-level helpers:
+### Multipart upload (manual control)
 
 ```php
-$init = $client->initializeMultipartUpload('DRIVE_ID', 'movie.mp4', 2147483648, 'video/mp4');
-$uploadId = $init['id'];
+use Lumen\Sdk\Response\MultipartUploadPart;
+use Lumen\Sdk\Response\MultipartUploadSession;
 
-$part1 = file_get_contents('movie.part1');
-$client->uploadMultipartPart($uploadId, 1, $part1); // automatically calculates part ETag
+$session = $client->initializeMultipartUpload(
+    '01jh2tcnx48caj4wsdkjevtr2h',
+    'movie.mp4',
+    2_147_483_648,
+    ['mime_type' => 'video/mp4'],
+);
+
+$part = file_get_contents(__DIR__ . '/movie.part1');
+$partResponse = $client->uploadMultipartPart($session, 1, $part);
 
 $parts = [
-    ['part_number' => 1, 'etag' => md5($part1)],
+    ['part_number' => $partResponse->getPartNumber(), 'etag' => $partResponse->getEtag()],
 ];
+
 $overallEtag = $client->calculateMultipartEtag($parts);
 
-$client->completeMultipartUpload($uploadId, $parts, $overallEtag);
+$result = $client->completeMultipartUpload($session, $parts, $overallEtag);
 ```
 
-### ETag utilities
+### Vault resolution helpers
 
-`calculateMultipartEtag()` implements the MD5 concatenation algorithm required by Lumen (identical to the S3 multipart ETag calculation). You can feed it the `etag` values returned by `uploadMultipartPart()` and pass the resulting string to `completeMultipartUpload()`.
+The resolver can also map arbitrary URLs back to a vault, which is useful when handling callbacks:
 
-### Error handling
+```php
+$vault = $resolver->resolveFromUrl('https://fsn1-1.files.lumen.cool/v1/files');
+```
 
-The client uses Guzzle under the hood. HTTP errors (4xx/5xx) will throw `GuzzleHttp\\Exception\\GuzzleException`. File-system errors throw `RuntimeException`.
+## Error handling
 
-### Testing
+* HTTP failures bubble up as `GuzzleHttp\Exception\GuzzleException`.
+* File-system issues throw `RuntimeException`.
+* JSON decoding uses `JSON_THROW_ON_ERROR` to surface malformed responses.
 
-Install dependencies and run PHPUnit:
+## Testing
 
 ```bash
 composer install
-vendor/bin/phpunit
+composer validate
 ```
 
 No tests are bundled yet; you can add your own in the `tests/` directory.
