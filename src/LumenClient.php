@@ -6,12 +6,15 @@ namespace Lumen\Sdk;
 
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Psr7\Utils;
+use JsonException;
 use Lumen\Sdk\Response\FileResource;
 use Lumen\Sdk\Response\MultipartUploadPart;
 use Lumen\Sdk\Response\MultipartUploadResult;
 use Lumen\Sdk\Response\MultipartUploadSession;
 use Psr\Http\Message\ResponseInterface;
+use Random\RandomException;
 use RuntimeException;
 
 final class LumenClient
@@ -26,9 +29,9 @@ final class LumenClient
     private ?Vault $defaultVault = null;
 
     public function __construct(
-        private VaultResolverInterface $vaultResolver,
-        ?ClientInterface               $httpClient = null,
-        array                          $defaultHeaders = [],
+        private readonly VaultResolverInterface $vaultResolver,
+        ?ClientInterface                        $httpClient = null,
+        array                                   $defaultHeaders = [],
     )
     {
         $this->httpClient = $httpClient ?? new GuzzleClient();
@@ -51,6 +54,10 @@ final class LumenClient
     }
 
     /**
+     * Upload a file to a drive, using simple or multipart upload depending on file size.
+     *
+     * @param string $filePath Path to the local file to be uploaded
+     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
      * @param array{
      *     parents?: string[],
      *     created_at?: string,
@@ -60,8 +67,14 @@ final class LumenClient
      *     chunk_size?: int,
      *     headers?: array<string, string>,
      *     on_progress?: callable(int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void,
-     *     vault?: string
+     *     vault?: string,
+     *     encryption?: array<string, mixed>|string
      * } $options
+     *
+     * @return FileResource
+     * @throws JsonException
+     * @throws RandomException
+     * @throws GuzzleException
      */
     public function upload(string $filePath, string $driveId, array $options = []): FileResource
     {
@@ -70,6 +83,7 @@ final class LumenClient
             throw new RuntimeException(sprintf('Unable to determine size for "%s".', $filePath));
         }
 
+        // When encryption is used, we allow blobs to be DEFAULT_CHUNK_SIZE + GCM_TAG_LEN for each part
         if ($fileSize <= self::DEFAULT_CHUNK_SIZE) {
             return $this->simpleUpload($filePath, $driveId, $options);
         }
@@ -78,16 +92,24 @@ final class LumenClient
     }
 
     /**
+     * Simple upload for small files (up to ~16 MiB).
+     *
+     * @param string $filePath Path to the local file to be uploaded
+     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
      * @param array{
      *     parents?: string[],
      *     created_at?: string,
      *     modified_at?: string,
      *     mime_type?: string,
-     *     etag?: string,
-     *     metadata?: array<string, scalar>,
      *     headers?: array<string, string>,
-     *     vault?: string
+     *     vault?: string,
+     *     encryption?: array<string, mixed>|string
      * } $options
+     *
+     * @return FileResource
+     * @throws JsonException
+     * @throws RandomException
+     * @throws GuzzleException
      */
     public function simpleUpload(string $filePath, string $driveId, array $options = []): FileResource
     {
@@ -99,16 +121,47 @@ final class LumenClient
         $normalizedDriveId = $context['drive_id'];
         $vault = $context['vault'];
 
-        $fileStream = fopen($filePath, 'rb');
-        if ($fileStream === false) {
-            throw new RuntimeException(sprintf('Unable to open "%s" for reading.', $filePath));
+        $encryptionOptions = $options['encryption'] ?? null;
+
+        // If encryption is requested, prepare file salt/key and encrypted blob
+        $isEncrypted = false;
+        $fileSalt = null;
+        $encryptedBlob = null;
+
+        if ($encryptionOptions !== null && $encryptionOptions !== false) {
+            // Resolve master key from provided encryption options. Throws on failure.
+            $masterKey = $this->resolveMasterKeyFromEncryptionOptions($encryptionOptions);
+
+            // Generate per-file salt and derive per-file key
+            $fileSalt = LumenKeyManager::generateFileSalt();
+            $fileKey = LumenKeyManager::deriveFileKey($masterKey, $fileSalt);
+
+            // Read entire file (small file path) and encrypt as a single chunk
+            $plaintext = file_get_contents($filePath);
+            if ($plaintext === false) {
+                throw new RuntimeException(sprintf('Unable to read "%s" for encryption.', $filePath));
+            }
+
+            $iv = LumenKeyManager::deriveChunkIv($fileSalt, 0);
+            $encryptedBlob = LumenKeyManager::encryptChunk($plaintext, $fileKey, $iv, LumenKeyManager::AAD_FILE);
+
+            $fileStream = Utils::streamFor($encryptedBlob);
+            $isEncrypted = true;
+        } else {
+            $fileStream = fopen($filePath, 'rb');
+            if ($fileStream === false) {
+                throw new RuntimeException(sprintf('Unable to open "%s" for reading.', $filePath));
+            }
         }
 
-        $etag = $options['etag'] ?? md5_file($filePath);
-        if ($etag === false) {
-            fclose($fileStream);
-
-            throw new RuntimeException('Unable to calculate MD5 hash for the file.');
+        if ($isEncrypted) {
+            $etag = md5($encryptedBlob);
+        } else {
+            $etag = md5_file($filePath);
+            if ($etag === false) {
+                if (is_resource($fileStream)) fclose($fileStream);
+                throw new RuntimeException('Unable to calculate MD5 hash for the file.');
+            }
         }
 
         $fileName = basename($filePath);
@@ -130,46 +183,26 @@ final class LumenClient
         ];
 
         if (isset($options['created_at'])) {
-            $multipart[] = [
-                'name' => 'created_at',
-                'contents' => $options['created_at'],
-            ];
+            $multipart[] = ['name' => 'created_at', 'contents' => $options['created_at']];
         }
 
         if (isset($options['modified_at'])) {
-            $multipart[] = [
-                'name' => 'modified_at',
-                'contents' => $options['modified_at'],
-            ];
+            $multipart[] = ['name' => 'modified_at', 'contents' => $options['modified_at']];
         }
 
         if (isset($options['mime_type'])) {
-            $multipart[] = [
-                'name' => 'mime_type',
-                'contents' => $options['mime_type'],
-            ];
+            $multipart[] = ['name' => 'mime_type', 'contents' => $options['mime_type']];
         }
 
         if (!empty($options['parents'])) {
             foreach ($options['parents'] as $parent) {
-                $multipart[] = [
-                    'name' => 'parents[]',
-                    'contents' => $parent,
-                ];
+                $multipart[] = ['name' => 'parents[]', 'contents' => $parent];
             }
         }
 
-        if (!empty($options['metadata']) && is_array($options['metadata'])) {
-            foreach ($options['metadata'] as $key => $value) {
-                if (!is_scalar($value)) {
-                    continue;
-                }
-
-                $multipart[] = [
-                    'name' => (string)$key,
-                    'contents' => (string)$value,
-                ];
-            }
+        if ($isEncrypted && $fileSalt !== null) {
+            $multipart[] = ['name' => 'file_salt', 'contents' => base64_encode($fileSalt)];
+            $multipart[] = ['name' => 'encrypted', 'contents' => '1'];
         }
 
         try {
@@ -183,19 +216,31 @@ final class LumenClient
             }
         }
 
+        /** @noinspection PhpUnhandledExceptionInspection */
         return new FileResource($this->decodeJson($response));
     }
 
     /**
+     * Initialize a new multipart upload session.
+     *
+     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
+     * @param string $fileName Name of the file to be created
+     * @param int $fileSize Size of the file in bytes
      * @param array{
      *     mime_type?: string,
      *     chunk_size?: int,
+     *     file_salt?: string,
+     *     encrypted?: bool,
      *     parents?: string[],
      *     created_at?: string,
      *     modified_at?: string,
      *     headers?: array<string, string>,
      *     vault?: string
      * } $options
+     *
+     * @return MultipartUploadSession
+     * @throws JsonException
+     * @throws GuzzleException
      */
     public function initializeMultipartUpload(string $driveId, string $fileName, int $fileSize, array $options = []): MultipartUploadSession
     {
@@ -203,12 +248,22 @@ final class LumenClient
         $normalizedDriveId = $context['drive_id'];
         $vault = $context['vault'];
 
+        if ($options['encrypted'] ?? false) {
+            // when encrypting, each part may be up to GCM_TAG_LEN bytes larger
+            $options['chunk_size'] = $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE;
+            $options['chunk_size'] += LumenKeyManager::GCM_TAG_LEN;
+            $parts = floor($fileSize / ($options['chunk_size'] - LumenKeyManager::GCM_TAG_LEN)) + 1;
+            $fileSize += $parts * LumenKeyManager::GCM_TAG_LEN;
+        }
+
         $payload = array_filter([
             'drive_id' => $normalizedDriveId,
             'file_name' => $fileName,
             'file_size' => $fileSize,
             'mime_type' => $options['mime_type'] ?? null,
             'chunk_size' => $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE,
+            'file_salt' => $options['file_salt'] ?? null,
+            'encrypted' => $options['encrypted'] ?? null,
             'parents' => $options['parents'] ?? null,
             'created_at' => $options['created_at'] ?? null,
             'modified_at' => $options['modified_at'] ?? null,
@@ -230,16 +285,26 @@ final class LumenClient
     }
 
     /**
+     * Upload a single part (chunk) to an existing multipart upload session.
+     *
+     * @param MultipartUploadSession|string $sessionOrSessionId Session object or session ID
+     * @param int $partNumber Part number (1-based)
+     * @param string $chunkContents Contents of the chunk to be uploaded
+     * @param string $etag ETag (MD5 hash) of the chunk (without quotes)
      * @param array{
      *     headers?: array<string, string>,
      *     vault?: string
      * } $options
+     *
+     * @return MultipartUploadPart
+     * @throws JsonException
+     * @throws GuzzleException
      */
     public function uploadMultipartPart(
         MultipartUploadSession|string $sessionOrSessionId,
         int                           $partNumber,
         string                        $chunkContents,
-        ?string                       $etag = null,
+        string                        $etag,
         array                         $options = []
     ): MultipartUploadPart
     {
@@ -248,11 +313,6 @@ final class LumenClient
         $sessionId = $sessionOrSessionId instanceof MultipartUploadSession ? $sessionOrSessionId->getId() : $sessionOrSessionId;
 
         $vault = $this->resolveVault($options['vault'] ?? null, $vault);
-
-        $etag ??= md5($chunkContents);
-        if ($etag === false) {
-            throw new RuntimeException('Unable to calculate MD5 hash for the provided chunk.');
-        }
 
         $multipart = [
             [
@@ -275,21 +335,32 @@ final class LumenClient
             'multipart' => $multipart,
         ]);
 
+        if ($response->getStatusCode() !== 200) {
+            throw new RuntimeException('Failed to upload part ' . $partNumber . ' of session ' . $sessionId . '. Status code: ' . $response->getStatusCode());
+        }
+
         $data = $this->decodeJson($response);
 
         return new MultipartUploadPart(
-            partNumber: isset($data['part_number']) ? (int)$data['part_number'] : $partNumber,
-            etag: isset($data['etag']) ? (string)$data['etag'] : $etag,
+            partNumber: $data['part_number'] ?? $partNumber,
+            etag: $data['etag'],
             attributes: $data,
         );
     }
 
     /**
+     * Complete a multipart upload session.
+     *
+     * @param MultipartUploadSession|string $sessionOrSessionId Session object or session ID
+     * @param string $overallEtag Overall ETag for the complete file (MD5 or MD5-N)
      * @param array<int, array{etag: string, part_number: int}> $parts
      * @param array{
      *     headers?: array<string, string>,
      *     vault?: string
      * } $options
+     *
+     * @throws JsonException
+     * @throws GuzzleException
      */
     public function completeMultipartUpload(
         MultipartUploadSession|string $sessionOrSessionId,
@@ -322,6 +393,8 @@ final class LumenClient
      *     headers?: array<string, string>,
      *     vault?: string
      * } $options
+     *
+     * @throws GuzzleException
      */
     public function abortMultipartUpload(MultipartUploadSession|string $sessionOrSessionId, array $options = []): void
     {
@@ -345,8 +418,16 @@ final class LumenClient
      *     chunk_size?: int,
      *     headers?: array<string, string>,
      *     on_progress?: callable(int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void,
-     *     vault?: string
+     *     vault?: string,
+     *     encryption?: array<string, mixed>|string,
      * } $options
+     *
+     * @throws RandomException
+     * @throws JsonException
+     * @throws GuzzleException
+     * @throws GuzzleException
+     * @throws GuzzleException
+     * @throws GuzzleException
      */
     public function multipartUpload(string $filePath, string $driveId, array $options = []): MultipartUploadResult
     {
@@ -363,15 +444,31 @@ final class LumenClient
         $chunkSize = $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE;
         $mimeType = $options['mime_type'] ?? $this->detectMimeType($filePath);
 
+        $encryptionOptions = $options['encryption'] ?? null;
+        $isEncrypted = false;
+        $fileSalt = null;
+        $fileKey = null;
+
+        if ($encryptionOptions !== null && $encryptionOptions !== false) {
+            $masterKey = $this->resolveMasterKeyFromEncryptionOptions($encryptionOptions);
+            $fileSalt = LumenKeyManager::generateFileSalt();
+            $fileKey = LumenKeyManager::deriveFileKey($masterKey, $fileSalt);
+            $isEncrypted = true;
+        }
+
         $session = $this->initializeMultipartUpload($driveId, $fileName, $fileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
+            'file_salt' => $fileSalt !== null ? base64_encode($fileSalt) : null,
+            'encrypted' => $isEncrypted ? true : null,
             'parents' => $options['parents'] ?? [],
             'created_at' => $options['created_at'] ?? null,
             'modified_at' => $options['modified_at'] ?? null,
             'headers' => $options['headers'] ?? [],
             'vault' => $options['vault'] ?? null,
         ]);
+
+        var_dump(['file_salt' => base64_encode($fileSalt), 'chunk_size' => $chunkSize]);
 
         $handle = fopen($filePath, 'rb');
         if ($handle === false) {
@@ -393,24 +490,34 @@ final class LumenClient
                     break;
                 }
 
-                $partEtag = md5($chunk);
-                if ($partEtag === false) {
-                    throw new RuntimeException(sprintf('Unable to calculate MD5 hash for part %d.', $partNumber));
-                }
+                if ($isEncrypted) {
+                    // derive IV for this part (LumenKeyManager expects 0-based index)
+                    $iv = LumenKeyManager::deriveChunkIv($fileSalt, $partNumber - 1);
+                    $blob = LumenKeyManager::encryptChunk($chunk, $fileKey, $iv, LumenKeyManager::AAD_FILE);
+                    $partEtag = md5($blob);
 
-                $partResponse = $this->uploadMultipartPart($session, $partNumber, $chunk, $partEtag, [
-                    'headers' => $options['headers'] ?? [],
-                ]);
+                    $partResponse = $this->uploadMultipartPart($session, $partNumber, $blob, $partEtag, [
+                        'headers' => $options['headers'] ?? [],
+                    ]);
+                } else {
+                    if (!$partEtag = md5($chunk)) {
+                        throw new RuntimeException(sprintf('Unable to calculate MD5 hash for part %d.', $partNumber));
+                    }
+
+                    $partResponse = $this->uploadMultipartPart($session, $partNumber, $chunk, $partEtag, [
+                        'headers' => $options['headers'] ?? [],
+                    ]);
+                }
 
                 $parts[] = [
                     'etag' => $partResponse->getEtagWithoutQuotes(),
                     'part_number' => $partResponse->getPartNumber(),
                 ];
 
-                $bytesUploaded += strlen($chunk);
+                $bytesUploaded += ($isEncrypted ? strlen($blob) : strlen($chunk));
 
                 if (isset($options['on_progress']) && is_callable($options['on_progress'])) {
-                    $options['on_progress']($partNumber, $bytesUploaded - strlen($chunk), $bytesUploaded, (int)$fileSize);
+                    $options['on_progress']($partNumber, $bytesUploaded - ($isEncrypted ? strlen($blob) : strlen($chunk)), $bytesUploaded, (int)$fileSize);
                 }
 
                 ++$partNumber;
@@ -453,8 +560,7 @@ final class LumenClient
             $binary .= $chunk;
         }
 
-        $final = md5($binary);
-        if ($final === false) {
+        if (!$final = md5($binary)) {
             throw new RuntimeException('Unable to calculate final MD5 hash for multipart upload.');
         }
 
@@ -469,6 +575,9 @@ final class LumenClient
         return array_merge($this->defaultHeaders, $headers);
     }
 
+    /**
+     * @throws GuzzleException
+     */
     private function request(string $method, Vault $vault, string $uri, array $options): ResponseInterface
     {
         $options['headers'] = $this->mergeHeaders($options['headers'] ?? []);
@@ -479,6 +588,7 @@ final class LumenClient
 
     /**
      * @return array<string, mixed>
+     * @throws JsonException
      */
     private function decodeJson(ResponseInterface $response): array
     {
@@ -556,5 +666,60 @@ final class LumenClient
         }
 
         throw new RuntimeException('No vault specified. Call setVault(), pass a vault option, or annotate the drive ID as {id}-{vault}.');
+    }
+
+    /**
+     * Resolve the master key from encryption options.
+     * Supported forms:
+     * - string (raw master key or hex encoded 64-char)
+     * - ['master_key' => string] same as above
+     * - ['mnemonic' => string, 'passphrase' => string?]
+     * If a hex master key is provided it will be hex-decoded.
+     * Throws RuntimeException on failure.
+     *
+     * @param array<string,mixed>|string $enc
+     * @return string raw 32-byte master key
+     */
+    private function resolveMasterKeyFromEncryptionOptions(array|string $enc): string
+    {
+        if (is_string($enc) && $enc !== '') {
+            // If hex
+            if (ctype_xdigit($enc) && strlen($enc) === 64) {
+                $decoded = hex2bin($enc);
+                if ($decoded === false) throw new RuntimeException('Invalid hex master key.');
+                return $decoded;
+            }
+
+            // raw binary assumed (length 32 expected)
+            if (strlen($enc) === 32) return $enc;
+
+            throw new RuntimeException('Unsupported master key format; provide raw 32-byte key or 64-char hex.');
+        }
+
+        if (is_array($enc)) {
+            if (isset($enc['master_key'])) {
+                $mk = $enc['master_key'];
+                if (!is_string($mk) || $mk === '') {
+                    throw new RuntimeException('master_key must be a non-empty string.');
+                }
+                if (ctype_xdigit($mk) && strlen($mk) === 64) {
+                    $decoded = hex2bin($mk);
+                    if ($decoded === false) throw new RuntimeException('Invalid hex master key.');
+                    return $decoded;
+                }
+                if (strlen($mk) === 32) return $mk;
+
+                throw new RuntimeException('Unsupported master_key format; provide raw 32-byte key or 64-char hex.');
+            }
+
+            if (isset($enc['mnemonic'])) {
+                $mnemonic = $enc['mnemonic'];
+                $pass = isset($enc['passphrase']) ? (string)$enc['passphrase'] : '';
+                if (!is_string($mnemonic) || $mnemonic === '') throw new RuntimeException('mnemonic must be a non-empty string.');
+                return LumenKeyManager::deriveMasterKeyFromMnemonic($mnemonic, $pass);
+            }
+        }
+
+        throw new RuntimeException('Unsupported encryption option provided. Provide master_key (raw or hex) or mnemonic.');
     }
 }

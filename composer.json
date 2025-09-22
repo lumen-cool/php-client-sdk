@@ -10,7 +10,8 @@
     "ext-hash": "*",
     "nyra/bip39": "^1.0",
     "ext-openssl": "*",
-    "ext-sodium": "*"
+    "ext-sodium": "*",
+    "ext-ctype": "*"
   },
   "autoload": {
     "psr-4": {

@@ -88,7 +88,7 @@ final class LumenKeyManager
      * Returns binary (ciphertext || 16-byte tag).
      * $aad is optional but recommended; must match on decrypt.
      */
-    public static function encryptChunk(string $chunkPlaintext, string $fileKey, string $iv, string $aad = self::AAD_FILE): string
+    public static function encryptChunk(string $chunkPlaintext, string $fileKey, string $iv, string $aad): string
     {
         $tag = '';
         $ct = openssl_encrypt(
@@ -111,7 +111,7 @@ final class LumenKeyManager
      * Decrypt a single encrypted part (ciphertext||tag) with AES-256-GCM.
      * Returns plaintext or throws if authentication fails.
      */
-    public static function decryptPart(string $partCipherTag, string $fileKey, string $iv, string $aad = self::AAD_FILE): string
+    public static function decryptPart(string $partCipherTag, string $fileKey, string $iv, string $aad): string
     {
         if (strlen($partCipherTag) < self::GCM_TAG_LEN) {
             throw new RuntimeException('Encrypted part too short.');
@@ -154,7 +154,6 @@ final class LumenKeyManager
                 break;
             }
             $iv = self::deriveChunkIv($fileSalt, $i);
-            /** @noinspection PhpRedundantOptionalArgumentInspection */
             $blob = self::encryptChunk($chunk, $fileKey, $iv, self::AAD_FILE);
             $onPart($i, $blob);
             $i++;
@@ -172,7 +171,6 @@ final class LumenKeyManager
         $i = 0;
         foreach ($parts as $blob) {
             $iv = self::deriveChunkIv($fileSalt, $i);
-            /** @noinspection PhpRedundantOptionalArgumentInspection */
             $pt = self::decryptPart($blob, $fileKey, $iv, self::AAD_FILE);
             $onPlain($pt);
             $i++;
