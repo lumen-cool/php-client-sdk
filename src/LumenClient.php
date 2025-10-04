@@ -127,6 +127,7 @@ final class LumenClient
         $isEncrypted = false;
         $fileSalt = null;
         $encryptedBlob = null;
+        $fileKey = null;
 
         if ($encryptionOptions !== null && $encryptionOptions !== false) {
             // Resolve master key from provided encryption options. Throws on failure.
@@ -170,7 +171,8 @@ final class LumenClient
             [
                 'name' => 'file',
                 'contents' => $fileStream,
-                'filename' => $fileName,
+                // when filename is sensitive (encrypted payload) avoid leaking it in the multipart filename header
+                'filename' => $isEncrypted ? 'encrypted' : $fileName,
             ],
             [
                 'name' => 'drive_id',
@@ -200,7 +202,9 @@ final class LumenClient
             }
         }
 
-        if ($isEncrypted && $fileSalt !== null) {
+        if ($isEncrypted) {
+            $encryptedFileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $fileSalt);
+            $multipart[] = ['name' => 'file_name', 'contents' => $encryptedFileName];
             $multipart[] = ['name' => 'file_salt', 'contents' => base64_encode($fileSalt)];
             $multipart[] = ['name' => 'encrypted', 'contents' => '1'];
         }
@@ -247,14 +251,6 @@ final class LumenClient
         $context = $this->resolveDriveContext($driveId, $options['vault'] ?? null);
         $normalizedDriveId = $context['drive_id'];
         $vault = $context['vault'];
-
-        if ($options['encrypted'] ?? false) {
-            // when encrypting, each part may be up to GCM_TAG_LEN bytes larger
-            $options['chunk_size'] = $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE;
-            $options['chunk_size'] += LumenKeyManager::GCM_TAG_LEN;
-            $parts = floor($fileSize / ($options['chunk_size'] - LumenKeyManager::GCM_TAG_LEN)) + 1;
-            $fileSize += $parts * LumenKeyManager::GCM_TAG_LEN;
-        }
 
         $payload = array_filter([
             'drive_id' => $normalizedDriveId,
@@ -456,6 +452,14 @@ final class LumenClient
             $isEncrypted = true;
         }
 
+        // When encrypting, each part may be up to GCM_TAG_LEN bytes larger
+        if ($isEncrypted) {
+            $chunkSize += LumenKeyManager::GCM_TAG_LEN;
+            $parts = floor($fileSize / ($chunkSize - LumenKeyManager::GCM_TAG_LEN)) + 1;
+            $fileSize += $parts * LumenKeyManager::GCM_TAG_LEN;
+            $fileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $fileSalt);
+        }
+
         $session = $this->initializeMultipartUpload($driveId, $fileName, $fileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
@@ -467,8 +471,6 @@ final class LumenClient
             'headers' => $options['headers'] ?? [],
             'vault' => $options['vault'] ?? null,
         ]);
-
-        var_dump(['file_salt' => base64_encode($fileSalt), 'chunk_size' => $chunkSize]);
 
         $handle = fopen($filePath, 'rb');
         if ($handle === false) {
@@ -721,5 +723,28 @@ final class LumenClient
         }
 
         throw new RuntimeException('Unsupported encryption option provided. Provide master_key (raw or hex) or mnemonic.');
+    }
+
+    public function buildNameSearchIndex(string $plainName, string $fileKey): array
+    {
+        // Derive a subkey for indexing (32 bytes)
+        $indexKey = hash_hkdf('sha256', $fileKey, 32, 'lumen-name-index');
+
+        // Normalize
+        $normalized = mb_strtolower(trim($plainName));
+        // Basic tokenization (split on non-alnum)
+        $tokens = preg_split('/[^a-z0-9]+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        // Always include the full normalized name for exact search
+        $unique = array_values(array_unique(array_merge([$normalized], $tokens)));
+
+        $index = [];
+        foreach ($unique as $t) {
+            // HMAC then truncate (e.g. 16 bytes -> 32 hex chars)
+            $h = hash_hmac('sha256', $t, $indexKey, true);
+            $index[] = bin2hex(substr($h, 0, 16));
+        }
+
+        return $index;
     }
 }

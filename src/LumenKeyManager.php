@@ -242,4 +242,54 @@ final class LumenKeyManager
         if ($pt === false) throw new RuntimeException('Master key unwrap failed.');
         return $pt;
     }
+
+    /**
+     * Derive a metadata encryption key from the per-file key and file salt.
+     */
+    public static function deriveMetadataKey(string $fileKey, string $fileSalt): string
+    {
+        return hash_hkdf('sha256', $fileKey, 32, self::INFO_META_WRAP, $fileSalt);
+    }
+
+    /**
+     * Encrypt a small metadata string (e.g. filename) with AES-256-GCM using a metadata key.
+     * Returns a base64-encoded blob of (iv || ciphertext || tag).
+     * @throws RandomException
+     */
+    public static function encryptMetadata(string $plaintext, string $fileKey, string $fileSalt): string
+    {
+        $metaKey = self::deriveMetadataKey($fileKey, $fileSalt);
+        $iv = random_bytes(self::GCM_IV_LEN);
+        $tag = '';
+        $ct = openssl_encrypt($plaintext, 'aes-256-gcm', $metaKey, OPENSSL_RAW_DATA, $iv, $tag, self::INFO_META_WRAP, self::GCM_TAG_LEN);
+        if ($ct === false) {
+            throw new RuntimeException('Metadata encryption failed.');
+        }
+        return base64_encode($iv . $ct . $tag);
+    }
+
+    /**
+     * Decrypt a metadata blob produced by encryptMetadata.
+     * Expects a base64-encoded blob of (iv || ciphertext || tag).
+     */
+    public static function decryptMetadata(string $blobB64, string $fileKey, string $fileSalt): string
+    {
+        $data = base64_decode($blobB64, true);
+        if ($data === false) {
+            throw new RuntimeException('Invalid base64 metadata blob.');
+        }
+        if (strlen($data) < (self::GCM_IV_LEN + self::GCM_TAG_LEN)) {
+            throw new RuntimeException('Metadata blob too short.');
+        }
+        $iv = substr($data, 0, self::GCM_IV_LEN);
+        $tag = substr($data, -self::GCM_TAG_LEN);
+        $ct = substr($data, self::GCM_IV_LEN, strlen($data) - self::GCM_IV_LEN - self::GCM_TAG_LEN);
+
+        $metaKey = self::deriveMetadataKey($fileKey, $fileSalt);
+        $pt = openssl_decrypt($ct, 'aes-256-gcm', $metaKey, OPENSSL_RAW_DATA, $iv, $tag, self::INFO_META_WRAP);
+        if ($pt === false) {
+            throw new RuntimeException('Metadata decryption/authentication failed.');
+        }
+        return $pt;
+    }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "lumen/php-client-sdk",
+  "name": "lumen-cool/sdk",
   "description": "PHP client for uploading files to Lumen Files drives.",
   "type": "library",
   "license": "MIT",
@@ -11,7 +11,8 @@
     "nyra/bip39": "^1.0",
     "ext-openssl": "*",
     "ext-sodium": "*",
-    "ext-ctype": "*"
+    "ext-ctype": "*",
+    "ext-mbstring": "*"
   },
   "autoload": {
     "psr-4": {
