@@ -5,14 +5,14 @@
   "license": "AGPL-3.0-or-later",
   "require": {
     "php": "^8.2",
-    "guzzlehttp/guzzle": "^7.8",
+    "ext-ctype": "*",
     "ext-fileinfo": "*",
     "ext-hash": "*",
-    "nyra/bip39": "^1.0",
+    "ext-mbstring": "*",
     "ext-openssl": "*",
     "ext-sodium": "*",
-    "ext-ctype": "*",
-    "ext-mbstring": "*"
+    "guzzlehttp/guzzle": "^7.8",
+    "nyra/bip39": "^1.0"
   },
   "autoload": {
     "psr-4": {
@@ -22,5 +22,8 @@
   "require-dev": {
     "phpunit/phpunit": "^10.5"
   },
-  "minimum-stability": "stable"
+  "minimum-stability": "stable",
+  "config": {
+    "sort-packages": true
+  }
 }
