@@ -23,7 +23,7 @@ use Lumen\Sdk\LumenClient;
 use Lumen\Sdk\LumenVaultResolver;
 
 $resolver = new LumenVaultResolver();
-$resolver->loadFromRegistry('https://api.lumen.cool/v1/vaults');
+$resolver->loadFromRegistry('https://lumen.cool/api/vaults');
 $resolver->addCustomVault('local', 'http://localhost:8000', name: 'Local development');
 
 $client = new LumenClient(
