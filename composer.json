@@ -1,0 +1,26 @@
+{
+  "name": "lumen-cool/sdk",
+  "description": "PHP client for uploading files to Lumen Files drives.",
+  "type": "library",
+  "license": "AGPL-3.0-or-later",
+  "require": {
+    "php": "^8.2",
+    "guzzlehttp/guzzle": "^7.8",
+    "ext-fileinfo": "*",
+    "ext-hash": "*",
+    "nyra/bip39": "^1.0",
+    "ext-openssl": "*",
+    "ext-sodium": "*",
+    "ext-ctype": "*",
+    "ext-mbstring": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Lumen\\Sdk\\": "src/"
+    }
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.5"
+  },
+  "minimum-stability": "stable"
+}
