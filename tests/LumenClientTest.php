@@ -7,14 +7,14 @@ class LumenClientTest extends TestCase
 {
     public function testGenerateShareableLinkAppendsKeyAsFragment(): void
     {
-        $baseUrl = 'https://lumen.cool/share';
+        $baseUrl = 'https://app.lumen.cool';
         $fileId = 'file_abc123';
         $rawFileKey = 'secret-raw-key-data';
 
         $link = $this->client->generateShareableLink($baseUrl, $fileId, $rawFileKey);
 
         // Assert base URL is intact and fragment indicator '#' is present
-        $this->assertStringStartsWith("$baseUrl/$fileId#", $link);
+        $this->assertStringStartsWith("$baseUrl/files/$fileId/view#", $link);
 
         // Extract the fragment and ensure it reverses to the correct raw key
         $parts = explode('#', $link);
