@@ -1,4 +1,5 @@
 <?php
+/** @noinspection PhpUnused */
 declare(strict_types=1);
 
 namespace Lumen\Sdk;
@@ -20,20 +21,20 @@ use SodiumException;
 final class LumenKeyManager
 {
     // ---- HKDF "info" roles (contexts) ----
-    public const INFO_MASTER = 'lumen-master-v1';
-    public const INFO_FILE_KEY = 'lumen-file-encryption-v1';
-    public const INFO_META_WRAP = 'lumen-metadata-wrap-v1';
-    public const INFO_SIGNING = 'lumen-signing-v1'; // reserved
+    public const string INFO_MASTER = 'lumen-master-v1';
+    public const string INFO_FILE_KEY = 'lumen-file-encryption-v1';
+    public const string INFO_META_WRAP = 'lumen-metadata-wrap-v1';
+    public const string INFO_SIGNING = 'lumen-signing-v1'; // reserved
 
     // ---- HKDF salts (app-level, non-secret constants) ----
-    public const SALT_APP = 'lumen-app-salt-v1';
-    public const SALT_SIGNING = 'lumen-signing-salt-v1'; // reserved
+    public const string SALT_APP = 'lumen-app-salt-v1';
+    public const string SALT_SIGNING = 'lumen-signing-salt-v1'; // reserved
 
     // ---- Cipher parameters ----
-    public const AAD_FILE = 'lumen-file-v1';
-    public const GCM_TAG_LEN = 16;   // bytes
-    public const GCM_IV_LEN = 12;   // 96-bit (recommended for GCM)
-    public const FILE_SALT_LEN = 16;   // per-file random salt
+    public const string AAD_FILE = 'lumen-file-v1';
+    public const int GCM_TAG_LEN = 16;   // bytes
+    public const int GCM_IV_LEN = 12;   // 96-bit (recommended for GCM)
+    public const int FILE_SALT_LEN = 16;   // per-file random salt
 
     // ===== ROOT: BIP-39 =====
 
@@ -41,6 +42,8 @@ final class LumenKeyManager
      * Derive the 32-byte app master key from a BIP-39 mnemonic (+ optional passphrase).
      * - mnemonicToSeedHex() -> 64-byte seed
      * - HKDF-SHA256(seed, info=INFO_MASTER, salt=SALT_APP, L=32)
+     *
+     * @throws RuntimeException if the mnemonic is invalid
      */
     public static function deriveMasterKeyFromMnemonic(string $mnemonic, string $bip39Passphrase = ''): string
     {
@@ -56,6 +59,7 @@ final class LumenKeyManager
 
     /**
      * Generate a new per-file salt (store in file metadata).
+     *
      * @throws RandomException
      */
     public static function generateFileSalt(): string
@@ -73,6 +77,7 @@ final class LumenKeyManager
 
     /**
      * Generate a new 32-byte (256-bit) random file key.
+     *
      * @throws RandomException
      */
     public static function generateRandomFileKey(): string
@@ -83,6 +88,8 @@ final class LumenKeyManager
     /**
      * Wrap the file key with the master key.
      * Returns: iv (12 bytes) . ciphertext . tag (16 bytes)
+     *
+     * @throws RandomException
      */
     public static function wrapFileKey(#[SensitiveParameter] string $fileKey, #[SensitiveParameter] string $masterKey): string
     {

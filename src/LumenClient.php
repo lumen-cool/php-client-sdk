@@ -36,7 +36,7 @@ final class LumenClient
     /**
      * Default multipart chunk size in bytes (16 MiB).
      */
-    private const int DEFAULT_CHUNK_SIZE = 16_777_216;
+    public const int DEFAULT_CHUNK_SIZE = 16_777_216;
 
     private ClientInterface $httpClient;
 
@@ -115,10 +115,10 @@ final class LumenClient
      * } $options
      * @return FileResource
      *
+     * @throws GuzzleException
      * @throws JsonException
      * @throws RandomException
-     * @throws GuzzleException
-     * @throws RuntimeException
+     * @throws SodiumException
      */
     public function upload(string $filePath, string $driveId, array $options = []): FileResource
     {
@@ -205,7 +205,7 @@ final class LumenClient
         // Decrypt the stream to destination
         $outStream = fopen($destinationPath, 'wb');
         if ($outStream === false) {
-            throw new RuntimeException("Cannot open destination path for writing: {$destinationPath}");
+            throw new RuntimeException("Cannot open destination path for writing: $destinationPath");
         }
 
         // We assume single chunk for simplicity in this example, or we can iterate chunks
@@ -564,7 +564,7 @@ final class LumenClient
      * Abort a multipart upload session.
      *
      * Cancels an in-progress multipart upload and discards all uploaded parts.
-     * Use this when an upload fails or needs to be cancelled.
+     * Use this when an upload fails or needs to be canceled.
      *
      * @param MultipartUploadSession|string $sessionOrSessionId Session object or session ID
      * @param array{
