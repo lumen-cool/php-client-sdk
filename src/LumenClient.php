@@ -7,8 +7,10 @@ namespace Lumen\Sdk;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Utils;
 use JsonException;
+use Lumen\Sdk\Middleware\UrlSanitizationMiddleware;
 use Lumen\Sdk\Response\FileResource;
 use Lumen\Sdk\Response\MultipartUploadPart;
 use Lumen\Sdk\Response\MultipartUploadResult;
@@ -31,7 +33,7 @@ final class LumenClient
     /**
      * Default multipart chunk size in bytes (16 MiB).
      */
-    private const DEFAULT_CHUNK_SIZE = 16_777_216;
+    private const int DEFAULT_CHUNK_SIZE = 16_777_216;
 
     private ClientInterface $httpClient;
 
@@ -53,7 +55,14 @@ final class LumenClient
         array                                   $defaultHeaders = [],
     )
     {
-        $this->httpClient = $httpClient ?? new GuzzleClient();
+        if ($httpClient === null) {
+            $stack = HandlerStack::create();
+            $stack->push(new UrlSanitizationMiddleware(), 'url_sanitization');
+            $this->httpClient = new GuzzleClient(['handler' => $stack]);
+        } else {
+            $this->httpClient = $httpClient;
+        }
+
         $this->defaultHeaders = array_merge([
             'Accept' => 'application/json',
         ], $defaultHeaders);
@@ -607,7 +616,7 @@ final class LumenClient
      *
      * Computes the composite ETag by hashing the concatenated binary MD5 values
      * of all parts. For single-part files, returns the part's ETag directly.
-     * For multi-part files, returns a formatted ETag with part count (e.g., "abc123-3").
+     * For multipart files, returns a formatted ETag with part count (e.g., "abc123-3").
      *
      * @param array<int, array{etag: string, part_number: int}> $parts
      * @return string
@@ -690,7 +699,7 @@ final class LumenClient
     }
 
     /**
-     * Detect MIME type of a file.
+     * Detect MIME type of file.
      *
      * @param string $filePath
      * @return string|null
@@ -872,5 +881,25 @@ final class LumenClient
         }
 
         return $index;
+    }
+
+    /**
+     * Generates a shareable link containing the raw file decryption key in the URL fragment.
+     * The file key is encoded safely using Base64URL encoding so it does not interfere with the URL structure.
+     *
+     * @param string $baseUrl The base URL of the application or viewing endpoint.
+     * @param string $rawFileKey The raw 32-byte encryption key for the file.
+     * @return string The formatted URL with the key securely in the fragment.
+     */
+    public function generateShareableLink(string $baseUrl, string $rawFileKey): string
+    {
+        // 1. Ensure a Base64-URL safe representation (no +, /, or trailing =)
+        $base64UrlKey = rtrim(strtr(base64_encode($rawFileKey), '+/', '-_'), '=');
+
+        // 2. Ensure baseUrl doesn't end with a slash
+        $baseUrl = rtrim($baseUrl, '/');
+
+        // 3. Assemble the secure link
+        return sprintf('%s#%s', $baseUrl, $base64UrlKey);
     }
 }
