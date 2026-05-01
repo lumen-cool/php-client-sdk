@@ -1,4 +1,5 @@
 <?php
+/** @noinspection PhpUnused */
 
 declare(strict_types=1);
 
@@ -18,6 +19,7 @@ use Lumen\Sdk\Response\MultipartUploadSession;
 use Psr\Http\Message\ResponseInterface;
 use Random\RandomException;
 use RuntimeException;
+use SodiumException;
 
 /**
  * Client for interacting with the Lumen file storage API.
@@ -133,6 +135,106 @@ final class LumenClient
     }
 
     /**
+     * Download a file from a vault.
+     * Supports both downloading with a master key (Mode A) and with a shareable raw file key (Mode B).
+     *
+     * @param string $fileId The ID of the file to download
+     * @param string $destinationPath Path to save the downloaded file
+     * @param array{
+     *     vault?: string,
+     *     encryption?: array<string, mixed>|string,
+     *     raw_file_key?: string,
+     *     headers?: array<string, string>
+     * } $options
+     * @return void
+     *
+     * @throws JsonException
+     * @throws GuzzleException
+     * @throws RuntimeException
+     * @throws SodiumException
+     */
+    public function downloadFile(string $fileId, string $destinationPath, array $options = []): void
+    {
+        $vault = $this->resolveVault($options['vault'] ?? null);
+
+        // 1. Fetch file metadata
+        $response = $this->request('GET', $vault, sprintf('/v1/files/%s', $fileId), [
+            'headers' => $options['headers'] ?? [],
+        ]);
+        $metadata = $this->decodeJson($response);
+
+        // 2. Fetch the file content
+        $contentResponse = $this->request('GET', $vault, sprintf('/v1/files/%s/content', $fileId), [
+            'headers' => $options['headers'] ?? [],
+            'stream' => true,
+        ]);
+        $contentStream = $contentResponse->getBody();
+
+        if (empty($metadata['encrypted'])) {
+            // Unencrypted file, stream directly to disk
+            $dest = Utils::streamFor(fopen($destinationPath, 'wb'));
+            Utils::copyToStream($contentStream, $dest);
+            return;
+        }
+
+        // Handle Encrypted File
+        $baseIv = isset($metadata['base_iv']) ? base64_decode($metadata['base_iv'], true) : null;
+        if ($baseIv === false || $baseIv === null) {
+            throw new RuntimeException("Missing or invalid base_iv in file metadata.");
+        }
+
+        // Mode B: Public Share Link (Raw Key provided)
+        if (isset($options['raw_file_key'])) {
+            $fileKey = $options['raw_file_key'];
+            if (strlen($fileKey) !== 32) {
+                throw new RuntimeException("Invalid raw_file_key length. Expected 32 bytes.");
+            }
+        } // Mode A: Authenticated Owner (Master Key unwraps wrapped_key)
+        else if (isset($options['encryption'])) {
+            $masterKey = $this->resolveMasterKeyFromEncryptionOptions($options['encryption']);
+            $wrappedKey = isset($metadata['wrapped_key']) ? base64_decode($metadata['wrapped_key'], true) : null;
+            if ($wrappedKey === false || $wrappedKey === null) {
+                throw new RuntimeException("Missing or invalid wrapped_key in file metadata.");
+            }
+            $fileKey = LumenKeyManager::unwrapFileKey($wrappedKey, $masterKey);
+        } else {
+            throw new RuntimeException("Cannot decrypt file: Neither raw_file_key nor encryption master_key provided.");
+        }
+
+        // Decrypt the stream to destination
+        $outStream = fopen($destinationPath, 'wb');
+        if ($outStream === false) {
+            throw new RuntimeException("Cannot open destination path for writing: {$destinationPath}");
+        }
+
+        // We assume single chunk for simplicity in this example, or we can iterate chunks
+        // LumenKeyManager doesn't provide decryptStreamToParts, but let's decrypt all parts
+        // based on DEFAULT_CHUNK_SIZE + TAG_LEN
+        $chunkSize = self::DEFAULT_CHUNK_SIZE + LumenKeyManager::GCM_TAG_LEN;
+
+        try {
+            $partNumber = 0;
+            while (!$contentStream->eof()) {
+                $blob = $contentStream->read($chunkSize);
+                if ($blob === '') {
+                    break;
+                }
+
+                $iv = LumenKeyManager::deriveChunkIv($baseIv, $partNumber);
+                $pt = LumenKeyManager::decryptPart($blob, $fileKey, $iv, LumenKeyManager::AAD_FILE);
+
+                fwrite($outStream, $pt);
+                $partNumber++;
+            }
+        } finally {
+            fclose($outStream);
+            if (function_exists('sodium_memzero')) {
+                sodium_memzero($fileKey);
+            }
+        }
+    }
+
+    /**
      * Simple upload for small files (up to ~16 MiB).
      *
      * Uploads a file in a single HTTP request. For files larger than 16 MiB,
@@ -171,17 +273,23 @@ final class LumenClient
 
         // If encryption is requested, prepare file salt/key and encrypted blob
         $isEncrypted = false;
-        $fileSalt = null;
         $encryptedBlob = null;
         $fileKey = null;
+        $wrappedKey = null;
+        $baseIv = null;
 
         if ($encryptionOptions !== null && $encryptionOptions !== false) {
             // Resolve master key from provided encryption options. Throws on failure.
             $masterKey = $this->resolveMasterKeyFromEncryptionOptions($encryptionOptions);
 
-            // Generate per-file salt and derive per-file key
-            $fileSalt = LumenKeyManager::generateFileSalt();
-            $fileKey = LumenKeyManager::deriveFileKey($masterKey, $fileSalt);
+            // Generate a new purely random file key
+            $fileKey = LumenKeyManager::generateRandomFileKey();
+
+            // Wrap the file key with the user's master key for backend storage
+            $wrappedKey = LumenKeyManager::wrapFileKey($fileKey, $masterKey);
+
+            // Generate deterministic base IV for the session
+            $baseIv = LumenKeyManager::generateBaseIv();
 
             // Read entire file (small file path) and encrypt as a single chunk
             $plaintext = file_get_contents($filePath);
@@ -189,7 +297,7 @@ final class LumenClient
                 throw new RuntimeException(sprintf('Unable to read "%s" for encryption.', $filePath));
             }
 
-            $iv = LumenKeyManager::deriveChunkIv($fileSalt, 0);
+            $iv = LumenKeyManager::deriveChunkIv($baseIv, 0);
             $encryptedBlob = LumenKeyManager::encryptChunk($plaintext, $fileKey, $iv, LumenKeyManager::AAD_FILE);
 
             $fileStream = Utils::streamFor($encryptedBlob);
@@ -249,9 +357,11 @@ final class LumenClient
         }
 
         if ($isEncrypted) {
-            $encryptedFileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $fileSalt);
+            // Using baseIv in place of salt for metadata wrapping
+            $encryptedFileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $baseIv);
             $multipart[] = ['name' => 'file_name', 'contents' => $encryptedFileName];
-            $multipart[] = ['name' => 'file_salt', 'contents' => base64_encode($fileSalt)];
+            $multipart[] = ['name' => 'base_iv', 'contents' => base64_encode($baseIv)];
+            $multipart[] = ['name' => 'wrapped_key', 'contents' => base64_encode($wrappedKey)];
             $multipart[] = ['name' => 'encrypted', 'contents' => '1'];
         }
 
@@ -283,7 +393,8 @@ final class LumenClient
      * @param array{
      *     mime_type?: string,
      *     chunk_size?: int,
-     *     file_salt?: string,
+     *     base_iv?: string,
+     *     wrapped_key?: string,
      *     encrypted?: bool,
      *     parents?: string[],
      *     created_at?: string,
@@ -308,7 +419,8 @@ final class LumenClient
             'file_size' => $fileSize,
             'mime_type' => $options['mime_type'] ?? null,
             'chunk_size' => $options['chunk_size'] ?? self::DEFAULT_CHUNK_SIZE,
-            'file_salt' => $options['file_salt'] ?? null,
+            'base_iv' => $options['base_iv'] ?? null,
+            'wrapped_key' => $options['wrapped_key'] ?? null,
             'encrypted' => $options['encrypted'] ?? null,
             'parents' => $options['parents'] ?? null,
             'created_at' => $options['created_at'] ?? null,
@@ -514,13 +626,17 @@ final class LumenClient
 
         $encryptionOptions = $options['encryption'] ?? null;
         $isEncrypted = false;
-        $fileSalt = null;
+        $baseIv = null;
+        $wrappedKey = null;
         $fileKey = null;
 
         if ($encryptionOptions !== null && $encryptionOptions !== false) {
             $masterKey = $this->resolveMasterKeyFromEncryptionOptions($encryptionOptions);
-            $fileSalt = LumenKeyManager::generateFileSalt();
-            $fileKey = LumenKeyManager::deriveFileKey($masterKey, $fileSalt);
+
+            $fileKey = LumenKeyManager::generateRandomFileKey();
+            $wrappedKey = LumenKeyManager::wrapFileKey($fileKey, $masterKey);
+            $baseIv = LumenKeyManager::generateBaseIv();
+
             $isEncrypted = true;
         }
 
@@ -529,13 +645,14 @@ final class LumenClient
             $chunkSize += LumenKeyManager::GCM_TAG_LEN;
             $parts = floor($fileSize / ($chunkSize - LumenKeyManager::GCM_TAG_LEN)) + 1;
             $fileSize += $parts * LumenKeyManager::GCM_TAG_LEN;
-            $fileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $fileSalt);
+            $fileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $baseIv);
         }
 
         $session = $this->initializeMultipartUpload($driveId, $fileName, $fileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
-            'file_salt' => $fileSalt !== null ? base64_encode($fileSalt) : null,
+            'base_iv' => $baseIv !== null ? base64_encode($baseIv) : null,
+            'wrapped_key' => $wrappedKey !== null ? base64_encode($wrappedKey) : null,
             'encrypted' => $isEncrypted ? true : null,
             'parents' => $options['parents'] ?? [],
             'created_at' => $options['created_at'] ?? null,
@@ -566,7 +683,7 @@ final class LumenClient
 
                 if ($isEncrypted) {
                     // derive IV for this part (LumenKeyManager expects 0-based index)
-                    $iv = LumenKeyManager::deriveChunkIv($fileSalt, $partNumber - 1);
+                    $iv = LumenKeyManager::deriveChunkIv($baseIv, $partNumber - 1);
                     $blob = LumenKeyManager::encryptChunk($chunk, $fileKey, $iv, LumenKeyManager::AAD_FILE);
                     $partEtag = md5($blob);
 
