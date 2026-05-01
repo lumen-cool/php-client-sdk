@@ -365,6 +365,8 @@ final class LumenKeyManager
     /**
      * Decrypt a metadata blob produced by encryptMetadata.
      * Expects a base64-encoded blob of (iv || ciphertext || tag).
+     *
+     * @throws RuntimeException if the blob is invalid or decryption/authentication fails.
      */
     public static function decryptMetadata(string $blobB64, #[SensitiveParameter] string $fileKey, string $fileSalt): string
     {

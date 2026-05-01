@@ -60,7 +60,7 @@ final class LumenClient
     {
         if ($httpClient === null) {
             $stack = HandlerStack::create();
-            $stack->push(new UrlSanitizationMiddleware(), 'url_sanitization');
+            $stack->push(UrlSanitizationMiddleware::create());
             $this->httpClient = new GuzzleClient(['handler' => $stack]);
         } else {
             $this->httpClient = $httpClient;

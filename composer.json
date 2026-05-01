@@ -19,8 +19,13 @@
       "Lumen\\Sdk\\": "src/"
     }
   },
+  "autoload-dev": {
+    "psr-4": {
+      "Lumen\\Sdk\\Tests\\": "tests/"
+    }
+  },
   "require-dev": {
-    "phpunit/phpunit": "^10.5"
+    "phpunit/phpunit": "^10.0"
   },
   "minimum-stability": "stable",
   "config": {

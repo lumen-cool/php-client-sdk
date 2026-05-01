@@ -20,6 +20,11 @@ use Throwable;
  */
 class UrlSanitizationMiddleware
 {
+    public static function create(): static
+    {
+        return new static();
+    }
+
     public function __invoke(callable $handler): callable
     {
         return function (RequestInterface $request, array $options) use ($handler): PromiseInterface {
