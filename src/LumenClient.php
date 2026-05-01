@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 namespace Lumen\Sdk;
 
+use Exception;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
@@ -165,13 +166,13 @@ final class LumenClient
         $metadata = $this->decodeJson($response);
 
         // 2. Fetch the file content
-        $contentResponse = $this->request('GET', $vault, sprintf('/v1/files/%s/content', $fileId), [
+        $contentResponse = $this->httpClient->request('GET', $metadata['download_url'], [
             'headers' => $options['headers'] ?? [],
             'stream' => true,
         ]);
         $contentStream = $contentResponse->getBody();
 
-        if (empty($metadata['encrypted'])) {
+        if (empty($metadata['encryption'])) {
             // Unencrypted file, stream directly to disk
             $dest = Utils::streamFor(fopen($destinationPath, 'wb'));
             Utils::copyToStream($contentStream, $dest);
@@ -179,7 +180,8 @@ final class LumenClient
         }
 
         // Handle Encrypted File
-        $baseIv = isset($metadata['base_iv']) ? base64_decode($metadata['base_iv'], true) : null;
+        $encMeta = $metadata['encryption'];
+        $baseIv = isset($encMeta['base_iv']) ? base64_decode($encMeta['base_iv'], true) : null;
         if ($baseIv === false || $baseIv === null) {
             throw new RuntimeException("Missing or invalid base_iv in file metadata.");
         }
@@ -187,13 +189,19 @@ final class LumenClient
         // Mode B: Public Share Link (Raw Key provided)
         if (isset($options['raw_file_key'])) {
             $fileKey = $options['raw_file_key'];
+
+            // If the user passed the Base64URL fragment directly, decode it safely
+            if (strlen($fileKey) > 32) {
+                $fileKey = base64_decode(strtr($fileKey, '-_', '+/'));
+            }
+
             if (strlen($fileKey) !== 32) {
                 throw new RuntimeException("Invalid raw_file_key length. Expected 32 bytes.");
             }
         } // Mode A: Authenticated Owner (Master Key unwraps wrapped_key)
         else if (isset($options['encryption'])) {
             $masterKey = $this->resolveMasterKeyFromEncryptionOptions($options['encryption']);
-            $wrappedKey = isset($metadata['wrapped_key']) ? base64_decode($metadata['wrapped_key'], true) : null;
+            $wrappedKey = isset($encMeta['wrapped_key']) ? base64_decode($encMeta['wrapped_key'], true) : null;
             if ($wrappedKey === false || $wrappedKey === null) {
                 throw new RuntimeException("Missing or invalid wrapped_key in file metadata.");
             }
@@ -208,27 +216,51 @@ final class LumenClient
             throw new RuntimeException("Cannot open destination path for writing: $destinationPath");
         }
 
-        // We assume single chunk for simplicity in this example, or we can iterate chunks
-        // LumenKeyManager doesn't provide decryptStreamToParts, but let's decrypt all parts
-        // based on DEFAULT_CHUNK_SIZE + TAG_LEN
-        $chunkSize = self::DEFAULT_CHUNK_SIZE + LumenKeyManager::GCM_TAG_LEN;
+        $serverChunkSize = (int)($encMeta['chunk'] ?? self::DEFAULT_CHUNK_SIZE);
+        $chunkSize = $serverChunkSize + LumenKeyManager::GCM_TAG_LEN;
 
         try {
             $partNumber = 0;
             while (!$contentStream->eof()) {
-                $blob = $contentStream->read($chunkSize);
+                $blob = '';
+                // Efficiently read until chunk size is met or EOF reached
+                while (strlen($blob) < $chunkSize && !$contentStream->eof()) {
+                    $read = $contentStream->read($chunkSize - strlen($blob));
+                    if ($read === '') {
+                        break;
+                    }
+                    $blob .= $read;
+                }
+
                 if ($blob === '') {
                     break;
                 }
 
-                $iv = LumenKeyManager::deriveChunkIv($baseIv, $partNumber);
-                $pt = LumenKeyManager::decryptPart($blob, $fileKey, $iv, LumenKeyManager::AAD_FILE);
+                // Decrypt
+                try {
+                    $iv = LumenKeyManager::deriveChunkIv($baseIv, $partNumber);
+                    $pt = LumenKeyManager::decryptPart($blob, $fileKey, $iv, LumenKeyManager::AAD_FILE);
+                } catch (Exception $e) {
+                    throw new RuntimeException("Decryption failed at part {$partNumber}: " . $e->getMessage());
+                }
 
-                fwrite($outStream, $pt);
+                // Write
+                if (fwrite($outStream, $pt) === false) {
+                    throw new RuntimeException("Failed to write decrypted data to output stream.");
+                }
+
                 $partNumber++;
             }
+        } catch (RuntimeException $e) {
+            // On failure, delete the incomplete file if it was created
+            if (file_exists($destinationPath)) {
+                unlink($destinationPath);
+            }
+            throw $e;
         } finally {
-            fclose($outStream);
+            if (is_resource($outStream)) {
+                fclose($outStream);
+            }
             if (function_exists('sodium_memzero')) {
                 sodium_memzero($fileKey);
             }
@@ -358,18 +390,22 @@ final class LumenClient
             }
         }
 
+        $requestHeaders = $options['headers'] ?? [];
+
         if ($isEncrypted) {
-            // Using baseIv in place of salt for metadata wrapping
+            $requestHeaders['x-lumen-ce-v'] = '2';
+            $requestHeaders['x-lumen-ce-alg'] = 'A256GCM';
+            $requestHeaders['x-lumen-ce-base-iv'] = base64_encode($baseIv);
+            $requestHeaders['x-lumen-ce-wrapped-key'] = base64_encode($wrappedKey);
+            $requestHeaders['x-lumen-ce-chunk'] = (string)filesize($filePath);
+
             $encryptedFileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $baseIv);
             $multipart[] = ['name' => 'file_name', 'contents' => $encryptedFileName];
-            $multipart[] = ['name' => 'base_iv', 'contents' => base64_encode($baseIv)];
-            $multipart[] = ['name' => 'wrapped_key', 'contents' => base64_encode($wrappedKey)];
-            $multipart[] = ['name' => 'encrypted', 'contents' => '1'];
         }
 
         try {
             $response = $this->request('POST', $vault, '/v1/files', [
-                'headers' => $options['headers'] ?? [],
+                'headers' => $requestHeaders,
                 'multipart' => $multipart,
             ]);
         } finally {
@@ -621,8 +657,8 @@ final class LumenClient
             throw new RuntimeException(sprintf('File "%s" does not exist.', $filePath));
         }
 
-        $fileSize = filesize($filePath);
-        if ($fileSize === false) {
+        $realFileSize = filesize($filePath);
+        if ($realFileSize === false) {
             throw new RuntimeException(sprintf('Unable to determine size for "%s".', $filePath));
         }
 
@@ -646,15 +682,20 @@ final class LumenClient
             $isEncrypted = true;
         }
 
+        $requestHeaders = $options['headers'] ?? [];
+
         // When encrypting, each part may be up to GCM_TAG_LEN bytes larger
         if ($isEncrypted) {
-            $chunkSize += LumenKeyManager::GCM_TAG_LEN;
-            $parts = floor($fileSize / ($chunkSize - LumenKeyManager::GCM_TAG_LEN)) + 1;
-            $fileSize += $parts * LumenKeyManager::GCM_TAG_LEN;
+            $requestHeaders['x-lumen-ce-v'] = '2';
+            $requestHeaders['x-lumen-ce-alg'] = 'A256GCM';
+            $requestHeaders['x-lumen-ce-base-iv'] = base64_encode($baseIv);
+            $requestHeaders['x-lumen-ce-wrapped-key'] = base64_encode($wrappedKey);
+            $requestHeaders['x-lumen-ce-chunk'] = (string)$chunkSize;
+
             $fileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $baseIv);
         }
 
-        $session = $this->initializeMultipartUpload($driveId, $fileName, $fileSize, [
+        $session = $this->initializeMultipartUpload($driveId, $fileName, $realFileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
             'base_iv' => $baseIv !== null ? base64_encode($baseIv) : null,
@@ -663,7 +704,7 @@ final class LumenClient
             'parents' => $options['parents'] ?? [],
             'created_at' => $options['created_at'] ?? null,
             'modified_at' => $options['modified_at'] ?? null,
-            'headers' => $options['headers'] ?? [],
+            'headers' => $requestHeaders,
             'vault' => $options['vault'] ?? null,
         ]);
 
