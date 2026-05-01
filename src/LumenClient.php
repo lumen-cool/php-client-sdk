@@ -1005,10 +1005,11 @@ final class LumenClient
      * The file key is encoded safely using Base64URL encoding so it does not interfere with the URL structure.
      *
      * @param string $baseUrl The base URL of the application or viewing endpoint.
+     * @param string $fileId The unique identifier of the file to be shared including vault slug (e.g. "abc123-kw2").
      * @param string $rawFileKey The raw 32-byte encryption key for the file.
      * @return string The formatted URL with the key securely in the fragment.
      */
-    public function generateShareableLink(string $baseUrl, string $rawFileKey): string
+    public function generateShareableLink(string $baseUrl, string $fileId, string $rawFileKey): string
     {
         // 1. Ensure a Base64-URL safe representation (no +, /, or trailing =)
         $base64UrlKey = rtrim(strtr(base64_encode($rawFileKey), '+/', '-_'), '=');
@@ -1017,6 +1018,6 @@ final class LumenClient
         $baseUrl = rtrim($baseUrl, '/');
 
         // 3. Assemble the secure link
-        return sprintf('%s#%s', $baseUrl, $base64UrlKey);
+        return sprintf('%s/files/%s/view#%s', $baseUrl, $fileId, $base64UrlKey);
     }
 }
