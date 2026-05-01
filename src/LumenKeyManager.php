@@ -70,6 +70,75 @@ final class LumenKeyManager
         return hash_hkdf('sha256', $masterKey, 32, self::INFO_FILE_KEY, $fileSalt);
     }
 
+    /**
+     * Generate a new 32-byte (256-bit) random file key.
+     * @throws RandomException
+     */
+    public static function generateRandomFileKey(): string
+    {
+        return random_bytes(32);
+    }
+
+    /**
+     * Wrap the file key with the master key.
+     * Returns: iv (12 bytes) . ciphertext . tag (16 bytes)
+     */
+    public static function wrapFileKey(string &$fileKey, string $masterKey): string
+    {
+        $iv = random_bytes(self::GCM_IV_LEN);
+        $tag = '';
+        $ct = openssl_encrypt(
+            $fileKey,
+            'aes-256-gcm',
+            $masterKey,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag,
+            self::INFO_FILE_KEY,
+            self::GCM_TAG_LEN
+        );
+        if ($ct === false) {
+            throw new RuntimeException('openssl_encrypt failed to wrap file key.');
+        }
+
+        // Attempt to wipe the plaintext file key from memory immediately after use
+        if (function_exists('sodium_memzero')) {
+            sodium_memzero($fileKey);
+        }
+
+        return $iv . $ct . $tag;
+    }
+
+    /**
+     * Unwrap the file key with the master key.
+     */
+    public static function unwrapFileKey(string $wrappedKeyData, string $masterKey): string
+    {
+        if (strlen($wrappedKeyData) < self::GCM_IV_LEN + 32 + self::GCM_TAG_LEN) {
+            throw new RuntimeException('Wrapped key data is too short.');
+        }
+
+        $iv = substr($wrappedKeyData, 0, self::GCM_IV_LEN);
+        $ct = substr($wrappedKeyData, self::GCM_IV_LEN, -self::GCM_TAG_LEN);
+        $tag = substr($wrappedKeyData, -self::GCM_TAG_LEN);
+
+        $fileKey = openssl_decrypt(
+            $ct,
+            'aes-256-gcm',
+            $masterKey,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag,
+            self::INFO_FILE_KEY
+        );
+
+        if ($fileKey === false) {
+            throw new RuntimeException('Failed to unwrap file key.');
+        }
+
+        return $fileKey;
+    }
+
     // ===== CHUNK IVs =====
 
     /**
