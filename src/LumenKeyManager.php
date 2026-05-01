@@ -6,6 +6,7 @@ namespace Lumen\Sdk;
 use Nyra\Bip39\Bip39;
 use Random\RandomException;
 use RuntimeException;
+use SensitiveParameter;
 use SodiumException;
 
 /**
@@ -65,7 +66,7 @@ final class LumenKeyManager
     /**
      * Derive a 32-byte per-file encryption key from the master key and file salt.
      */
-    public static function deriveFileKey(string $masterKey, string $fileSalt): string
+    public static function deriveFileKey(#[SensitiveParameter] string $masterKey, string $fileSalt): string
     {
         return hash_hkdf('sha256', $masterKey, 32, self::INFO_FILE_KEY, $fileSalt);
     }
@@ -83,7 +84,7 @@ final class LumenKeyManager
      * Wrap the file key with the master key.
      * Returns: iv (12 bytes) . ciphertext . tag (16 bytes)
      */
-    public static function wrapFileKey(string &$fileKey, string $masterKey): string
+    public static function wrapFileKey(#[SensitiveParameter] string $fileKey, #[SensitiveParameter] string $masterKey): string
     {
         $iv = random_bytes(self::GCM_IV_LEN);
         $tag = '';
@@ -101,10 +102,6 @@ final class LumenKeyManager
             throw new RuntimeException('openssl_encrypt failed to wrap file key.');
         }
 
-        // Attempt to wipe the plaintext file key from memory immediately after use
-        if (function_exists('sodium_memzero')) {
-            sodium_memzero($fileKey);
-        }
 
         return $iv . $ct . $tag;
     }
@@ -112,7 +109,7 @@ final class LumenKeyManager
     /**
      * Unwrap the file key with the master key.
      */
-    public static function unwrapFileKey(string $wrappedKeyData, string $masterKey): string
+    public static function unwrapFileKey(string $wrappedKeyData, #[SensitiveParameter] string $masterKey): string
     {
         if (strlen($wrappedKeyData) < self::GCM_IV_LEN + 32 + self::GCM_TAG_LEN) {
             throw new RuntimeException('Wrapped key data is too short.');
@@ -178,7 +175,7 @@ final class LumenKeyManager
      * Returns binary (ciphertext || 16-byte tag).
      * $aad is optional but recommended; must match on decrypt.
      */
-    public static function encryptChunk(string $chunkPlaintext, string $fileKey, string $iv, string $aad): string
+    public static function encryptChunk(string $chunkPlaintext, #[SensitiveParameter] string $fileKey, string $iv, string $aad): string
     {
         $tag = '';
         $ct = openssl_encrypt(
@@ -201,7 +198,7 @@ final class LumenKeyManager
      * Decrypt a single encrypted part (ciphertext||tag) with AES-256-GCM.
      * Returns plaintext or throws if authentication fails.
      */
-    public static function decryptPart(string $partCipherTag, string $fileKey, string $iv, string $aad): string
+    public static function decryptPart(string $partCipherTag, #[SensitiveParameter] string $fileKey, string $iv, string $aad): string
     {
         if (strlen($partCipherTag) < self::GCM_TAG_LEN) {
             throw new RuntimeException('Encrypted part too short.');
@@ -232,7 +229,7 @@ final class LumenKeyManager
      * @param int $plaintextChunkSize fixed plaintext chunk size in bytes
      * @param callable $onPart function(int $index, string $cipherTagBlob): void
      */
-    public static function encryptStreamToParts($inStream, string $fileKey, string $fileSalt, int $plaintextChunkSize, callable $onPart): void
+    public static function encryptStreamToParts($inStream, #[SensitiveParameter] string $fileKey, string $fileSalt, int $plaintextChunkSize, callable $onPart): void
     {
         if (!is_resource($inStream)) {
             throw new RuntimeException('Input is not a valid stream.');
@@ -256,7 +253,7 @@ final class LumenKeyManager
      * @param iterable $parts yields strings (cipher||tag) in order
      * @param callable $onPlain function(string $plaintext): void
      */
-    public static function decryptParts(iterable $parts, string $fileKey, string $fileSalt, callable $onPlain): void
+    public static function decryptParts(iterable $parts, #[SensitiveParameter] string $fileKey, string $fileSalt, callable $onPlain): void
     {
         $i = 0;
         foreach ($parts as $blob) {
@@ -275,7 +272,7 @@ final class LumenKeyManager
      * @throws RandomException
      * @throws SodiumException
      */
-    public static function wrapMasterKeyWithPassword(string $masterKey, string $password): array
+    public static function wrapMasterKeyWithPassword(#[SensitiveParameter] string $masterKey, #[SensitiveParameter] string $password): array
     {
         if (!function_exists('sodium_crypto_pwhash')) {
             throw new RuntimeException('libsodium (sodium_crypto_pwhash) is required for Argon2id.');
@@ -307,7 +304,7 @@ final class LumenKeyManager
     /**
      * @throws SodiumException
      */
-    public static function unwrapMasterKeyWithPassword(array $blob, string $password): string
+    public static function unwrapMasterKeyWithPassword(array $blob, #[SensitiveParameter] string $password): string
     {
         if (!function_exists('sodium_crypto_pwhash')) {
             throw new RuntimeException('libsodium (sodium_crypto_pwhash) is required for Argon2id.');
@@ -336,7 +333,7 @@ final class LumenKeyManager
     /**
      * Derive a metadata encryption key from the per-file key and file salt.
      */
-    public static function deriveMetadataKey(string $fileKey, string $fileSalt): string
+    public static function deriveMetadataKey(#[SensitiveParameter] string $fileKey, string $fileSalt): string
     {
         return hash_hkdf('sha256', $fileKey, 32, self::INFO_META_WRAP, $fileSalt);
     }
@@ -346,7 +343,7 @@ final class LumenKeyManager
      * Returns a base64-encoded blob of (iv || ciphertext || tag).
      * @throws RandomException
      */
-    public static function encryptMetadata(string $plaintext, string $fileKey, string $fileSalt): string
+    public static function encryptMetadata(string $plaintext, #[SensitiveParameter] string $fileKey, string $fileSalt): string
     {
         $metaKey = self::deriveMetadataKey($fileKey, $fileSalt);
         $iv = random_bytes(self::GCM_IV_LEN);
@@ -362,7 +359,7 @@ final class LumenKeyManager
      * Decrypt a metadata blob produced by encryptMetadata.
      * Expects a base64-encoded blob of (iv || ciphertext || tag).
      */
-    public static function decryptMetadata(string $blobB64, string $fileKey, string $fileSalt): string
+    public static function decryptMetadata(string $blobB64, #[SensitiveParameter] string $fileKey, string $fileSalt): string
     {
         $data = base64_decode($blobB64, true);
         if ($data === false) {

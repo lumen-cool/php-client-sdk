@@ -19,6 +19,7 @@ use Lumen\Sdk\Response\MultipartUploadSession;
 use Psr\Http\Message\ResponseInterface;
 use Random\RandomException;
 use RuntimeException;
+use SensitiveParameter;
 use SodiumException;
 
 /**
@@ -258,6 +259,7 @@ final class LumenClient
      * @throws RandomException
      * @throws GuzzleException
      * @throws RuntimeException
+     * @throws SodiumException
      */
     public function simpleUpload(string $filePath, string $driveId, array $options = []): FileResource
     {
@@ -373,6 +375,9 @@ final class LumenClient
         } finally {
             if (is_resource($fileStream)) {
                 fclose($fileStream);
+            }
+            if (function_exists('sodium_memzero') && $fileKey !== null) {
+                sodium_memzero($fileKey);
             }
         }
 
@@ -608,6 +613,7 @@ final class LumenClient
      * @throws JsonException
      * @throws GuzzleException
      * @throws RuntimeException
+     * @throws SodiumException
      */
     public function multipartUpload(string $filePath, string $driveId, array $options = []): MultipartUploadResult
     {
@@ -715,6 +721,9 @@ final class LumenClient
             }
         } finally {
             fclose($handle);
+            if (function_exists('sodium_memzero') && $fileKey !== null) {
+                sodium_memzero($fileKey);
+            }
         }
 
         if ($parts === []) {
@@ -923,7 +932,7 @@ final class LumenClient
      *
      * @throws RuntimeException
      */
-    private function resolveMasterKeyFromEncryptionOptions(array|string $enc): string
+    private function resolveMasterKeyFromEncryptionOptions(#[SensitiveParameter] array|string $enc): string
     {
         if (is_string($enc) && $enc !== '') {
             // If hex
@@ -977,7 +986,7 @@ final class LumenClient
      * @param string $fileKey Per-file encryption key (32 bytes)
      * @return array<int, string>  Array of searchable token hashes
      */
-    public function buildNameSearchIndex(string $plainName, string $fileKey): array
+    public function buildNameSearchIndex(string $plainName, #[SensitiveParameter] string $fileKey): array
     {
         // Derive a subkey for indexing (32 bytes)
         $indexKey = hash_hkdf('sha256', $fileKey, 32, 'lumen-name-index');
@@ -1009,7 +1018,7 @@ final class LumenClient
      * @param string $rawFileKey The raw 32-byte encryption key for the file.
      * @return string The formatted URL with the key securely in the fragment.
      */
-    public function generateShareableLink(string $baseUrl, string $fileId, string $rawFileKey): string
+    public function generateShareableLink(string $baseUrl, string $fileId, #[SensitiveParameter] string $rawFileKey): string
     {
         // 1. Ensure a Base64-URL safe representation (no +, /, or trailing =)
         $base64UrlKey = rtrim(strtr(base64_encode($rawFileKey), '+/', '-_'), '=');
