@@ -6,6 +6,8 @@ namespace Lumen\Sdk;
 
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Exception\GuzzleException;
+use JsonException;
 use RuntimeException;
 
 /**
@@ -131,6 +133,9 @@ final class LumenVaultResolver implements VaultResolverInterface
      *
      * @param string $registryUrl
      * @param array<string, string> $headers
+     *
+     * @throws GuzzleException
+     * @throws JsonException
      */
     public function loadFromRegistry(string $registryUrl, array $headers = []): void
     {

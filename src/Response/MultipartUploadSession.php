@@ -6,7 +6,7 @@ namespace Lumen\Sdk\Response;
 
 use Lumen\Sdk\Vault;
 
-final class MultipartUploadSession
+final readonly class MultipartUploadSession
 {
     /**
      * @param array<string, mixed> $attributes
@@ -14,8 +14,8 @@ final class MultipartUploadSession
     public function __construct(
         private string $id,
         private string $driveId,
-        private Vault $vault,
-        private array $attributes,
+        private Vault  $vault,
+        private array  $attributes,
     ) {
         //
     }

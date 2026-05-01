@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Lumen\Sdk;
 
+use InvalidArgumentException;
+
 /**
  * Value object representing a Lumen vault (storage cluster/tenant).
  */
-final class Vault
+final readonly class Vault
 {
     /**
      * @param string $slug Unique identifier for the vault
@@ -18,12 +20,12 @@ final class Vault
      * @param string|null $updatedAt Update timestamp
      */
     public function __construct(
-        public readonly string  $slug,
-        public readonly string  $endpoint,
-        public readonly ?int    $id = null,
-        public readonly ?string $name = null,
-        public readonly ?string $createdAt = null,
-        public readonly ?string $updatedAt = null,
+        public string  $slug,
+        public string  $endpoint,
+        public ?int    $id = null,
+        public ?string $name = null,
+        public ?string $createdAt = null,
+        public ?string $updatedAt = null,
     )
     {
     }
@@ -39,11 +41,11 @@ final class Vault
         $slug = $payload['slug'] ?? null;
 
         if (!is_string($endpoint) || $endpoint === '') {
-            throw new \InvalidArgumentException('Vault endpoint must be provided as a non-empty string.');
+            throw new InvalidArgumentException('Vault endpoint must be provided as a non-empty string.');
         }
 
         if (!is_string($slug) || $slug === '') {
-            throw new \InvalidArgumentException('Vault slug must be provided as a non-empty string.');
+            throw new InvalidArgumentException('Vault slug must be provided as a non-empty string.');
         }
 
         return new self(

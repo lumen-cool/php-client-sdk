@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Lumen\Sdk\Response;
 
-final class FileResource
+final readonly class FileResource
 {
     /**
      * @param array<string, mixed> $attributes

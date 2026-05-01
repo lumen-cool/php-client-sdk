@@ -11,7 +11,7 @@ final class MultipartUploadResult
     /**
      * @param array<string, mixed> $attributes
      */
-    public function __construct(private array $attributes)
+    public function __construct(private readonly array $attributes)
     {
         $this->file = new FileResource($attributes['file']);
     }
