@@ -73,12 +73,33 @@ final class LumenKeyManager
     // ===== CHUNK IVs =====
 
     /**
-     * Derive deterministic 96-bit (12-byte) IV for chunk i:
-     * IV_i = first 12 bytes of SHA256(fileSalt || uint32_be(i))
+     * Generate a new random 96-bit (12-byte) base IV.
+     * @throws RandomException
      */
-    public static function deriveChunkIv(string $fileSalt, int $chunkIndex): string
+    public static function generateBaseIv(): string
     {
-        return substr(hash('sha256', $fileSalt . pack('N', $chunkIndex), true), 0, self::GCM_IV_LEN);
+        return random_bytes(self::GCM_IV_LEN);
+    }
+
+    /**
+     * Derive a unique 96-bit (12-byte) IV for chunk i by XORing the base IV with the chunk index.
+     * cks or overwrites share the same nonce.
+     */
+    public static function deriveChunkIv(string $baseIv, int $chunkIndex): string
+    {
+        if (strlen($baseIv) !== self::GCM_IV_LEN) {
+            throw new RuntimeException('Invalid base IV length.');
+        }
+
+        $iv = $baseIv;
+        $counter = pack('N', $chunkIndex); // 4-byte chunk index counter
+
+        // XOR the last 4 bytes of the IV
+        for ($i = 0; $i < 4; ++$i) {
+            $iv[8 + $i] = $iv[8 + $i] ^ $counter[$i];
+        }
+
+        return $iv;
     }
 
     // ===== ENCRYPT / DECRYPT =====
