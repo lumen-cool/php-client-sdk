@@ -59,6 +59,48 @@ If you prefer to embed the vault in the drive identifier, pass `"{drive}-{vault}
 $file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h-kw2');
 ```
 
+### Encrypted upload
+
+```php
+$mnemonic = 'your bip39 mnemonic phrase ...';
+
+$file = $client->upload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h', [
+    'mime_type' => 'image/jpeg',
+    'encryption' => [
+        'mnemonic' => $mnemonic
+    ]
+]);
+
+// Optionally interact with the keys (if you want to share the file)
+use Lumen\Sdk\LumenKeyManager;
+
+$masterKey = LumenKeyManager::deriveMasterKeyFromMnemonic($mnemonic);
+$fileKey = LumenKeyManager::unwrapFileKey(
+    base64_decode(
+        string: $file->toArray()['encryption']['wrapped_key'],
+        strict: true
+    ),
+    $masterKey
+);
+
+$shareableLink = $client->generateShareableLink('https://app.lumen.cool', $file->getFederatedId(), $fileKey);
+```
+
+### Download file
+
+Files can be downloaded directly from a vault. If the file is encrypted, you can pass the `raw_file_key` obtained from a shareable link or unwrapped using your mnemonic.
+
+```php
+// Unencrypted file download
+$client->downloadFile('01jh2tcnx48caj4wsdkjevtr2h', 'downloaded.jpg');
+
+// Encrypted file download (requires the unwrapped file key)
+$client->downloadFile('01kqjxmvfpjshe0vbs9jbzsa5q-kw2', 'decrypted.jpg', [
+    'raw_file_key' => $fileKey, // Binary string or Base64URL encoded
+    // or using 'encryption' => ['mnemonic' => $mnemonic] to derive the key on-the-fly
+]);
+```
+
 ### Multipart upload (automatic)
 
 ```php
