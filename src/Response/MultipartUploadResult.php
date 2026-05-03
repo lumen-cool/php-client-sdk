@@ -6,14 +6,14 @@ namespace Lumen\Sdk\Response;
 
 final class MultipartUploadResult
 {
-    private FileResource $file;
+    private File $file;
 
     /**
      * @param array<string, mixed> $attributes
      */
     public function __construct(private readonly array $attributes)
     {
-        $this->file = new FileResource($attributes['file']);
+        $this->file = new File($attributes['file']);
     }
 
     public function getId(): string
@@ -21,7 +21,7 @@ final class MultipartUploadResult
         return $this->attributes['id'];
     }
 
-    public function getFile(): FileResource
+    public function getFile(): File
     {
         return $this->file;
     }

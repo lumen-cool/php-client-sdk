@@ -3,21 +3,32 @@ declare(strict_types=1);
 
 namespace Lumen\Sdk\Tests;
 
+use Lumen\Sdk\Response\File;
+
 class LumenClientTest extends TestCase
 {
     public function testGenerateShareableLinkAppendsKeyAsFragment(): void
     {
         $baseUrl = 'https://app.lumen.cool';
         $fileId = 'file_abc123';
+        $vaultSlug = 'vault_xyz';
         $rawFileKey = 'secret-raw-key-data';
 
-        $link = $this->client->generateShareableLink($baseUrl, $fileId, $rawFileKey);
+        $file = new File([
+            'id' => $fileId,
+            'vault' => $vaultSlug,
+            'encryption' => [
+                'wrapped_key' => base64_encode($rawFileKey),
+            ],
+        ]);
+
+        $link = $this->client->generateShareableLink($file);
 
         // Assert base URL is intact and fragment indicator '#' is present
-        $this->assertStringStartsWith("$baseUrl/files/$fileId/view#", $link);
+        $this->assertStringStartsWith("$baseUrl/files/$fileId-$vaultSlug/view#", $link->getFullUrl());
 
         // Extract the fragment and ensure it reverses to the correct raw key
-        $parts = explode('#', $link);
+        $parts = explode('#', $link->getFullUrl());
         $this->assertCount(2, $parts);
 
         $encodedKey = $parts[1];

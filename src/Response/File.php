@@ -4,21 +4,24 @@ declare(strict_types=1);
 
 namespace Lumen\Sdk\Response;
 
-final readonly class FileResource
+use Lumen\Sdk\FederatedId;
+
+final readonly class File
 {
     /**
      * @param array<string, mixed> $attributes
      */
     public function __construct(private array $attributes)
     {
+        //
     }
 
     /**
      * Get a unique federated ID for the file, combining the file ID and vault slug.
      */
-    public function getFederatedId(): string
+    public function getFederatedId(): FederatedId
     {
-        return sprintf('%s-%s', $this->getId(), $this->getVaultSlug());
+        return new FederatedId(id: $this->getId(), slug: $this->getVaultSlug());
     }
 
     /**
@@ -47,6 +50,18 @@ final readonly class FileResource
     public function getSize(): ?int
     {
         return isset($this->attributes['size']) ? (int)$this->attributes['size'] : null;
+    }
+
+    public function getDownloadUrl(): ?string
+    {
+        return isset($this->attributes['download_url']) ? (string)$this->attributes['download_url'] : null;
+    }
+
+    public function getEncryption(): ?FileEncryption
+    {
+        return isset($this->attributes['encryption']) && is_array($this->attributes['encryption'])
+            ? new FileEncryption($this->attributes['encryption'])
+            : null;
     }
 
     public function getVaultSlug(): ?string

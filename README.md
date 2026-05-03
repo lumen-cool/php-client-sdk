@@ -32,18 +32,15 @@ $client = new LumenClient(
         'Authorization' => 'Bearer YOUR_TOKEN',
     ],
 );
-
-// Optional: set a default vault once
-$client->setVault('kw2');
 ```
 
 ### Simple upload
 
 ```php
-use Lumen\Sdk\Response\FileResource;
+use Lumen\Sdk\Response\File;
 
-/** @var FileResource $file */
-$file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h');
+/** @var File $file */
+$file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h-kw2');
 
 printf(
     "Uploaded %s (%d bytes) to vault %s\n",
@@ -64,7 +61,7 @@ $file = $client->simpleUpload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2
 ```php
 $mnemonic = 'your bip39 mnemonic phrase ...';
 
-$file = $client->upload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h', [
+$file = $client->upload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h-kw2', [
     'mime_type' => 'image/jpeg',
     'encryption' => [
         'mnemonic' => $mnemonic
@@ -75,15 +72,7 @@ $file = $client->upload(__DIR__ . '/photo.jpg', '01jh2tcnx48caj4wsdkjevtr2h', [
 use Lumen\Sdk\LumenKeyManager;
 
 $masterKey = LumenKeyManager::deriveMasterKeyFromMnemonic($mnemonic);
-$fileKey = LumenKeyManager::unwrapFileKey(
-    base64_decode(
-        string: $file->toArray()['encryption']['wrapped_key'],
-        strict: true
-    ),
-    $masterKey
-);
-
-$shareableLink = $client->generateShareableLink('https://app.lumen.cool', $file->getFederatedId(), $fileKey);
+$shareableLink = $client->generateShareableLink($file);
 ```
 
 ### Download file
@@ -92,10 +81,10 @@ Files can be downloaded directly from a vault. If the file is encrypted, you can
 
 ```php
 // Unencrypted file download
-$client->downloadFile('01jh2tcnx48caj4wsdkjevtr2h', 'downloaded.jpg');
+$client->download('01jh2tcnx48caj4wsdkjevtr2h-kw2', 'downloaded.jpg');
 
 // Encrypted file download (requires the unwrapped file key)
-$client->downloadFile('01kqjxmvfpjshe0vbs9jbzsa5q-kw2', 'decrypted.jpg', [
+$client->download('01kqjxmvfpjshe0vbs9jbzsa5q-kw2', 'decrypted.jpg', [
     'raw_file_key' => $fileKey, // Binary string or Base64URL encoded
     // or using 'encryption' => ['mnemonic' => $mnemonic] to derive the key on-the-fly
 ]);
@@ -107,7 +96,7 @@ $client->downloadFile('01kqjxmvfpjshe0vbs9jbzsa5q-kw2', 'decrypted.jpg', [
 use Lumen\Sdk\Response\MultipartUploadResult;
 
 /** @var MultipartUploadResult $result */
-$result = $client->multipartUpload(__DIR__ . '/movie.mp4', '01jh2tcnx48caj4wsdkjevtr2h', [
+$result = $client->multipartUpload(__DIR__ . '/movie.mp4', '01jh2tcnx48caj4wsdkjevtr2h-kw2', [
     'chunk_size' => 16 * 1024 * 1024,
     'on_progress' => static function (int $partNumber, int $offset, int $bytesUploaded, int $totalBytes): void {
         printf("Uploaded part %d (%d/%d bytes)\n", $partNumber, $bytesUploaded, $totalBytes);
@@ -124,7 +113,7 @@ use Lumen\Sdk\Response\MultipartUploadPart;
 use Lumen\Sdk\Response\MultipartUploadSession;
 
 $session = $client->initializeMultipartUpload(
-    '01jh2tcnx48caj4wsdkjevtr2h',
+    '01jh2tcnx48caj4wsdkjevtr2h-kw2',
     'movie.mp4',
     2_147_483_648,
     ['mime_type' => 'video/mp4'],

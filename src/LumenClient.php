@@ -13,7 +13,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Utils;
 use JsonException;
 use Lumen\Sdk\Middleware\UrlSanitizationMiddleware;
-use Lumen\Sdk\Response\FileResource;
+use Lumen\Sdk\Response\File;
 use Lumen\Sdk\Response\MultipartUploadPart;
 use Lumen\Sdk\Response\MultipartUploadResult;
 use Lumen\Sdk\Response\MultipartUploadSession;
@@ -44,8 +44,6 @@ final class LumenClient
     /** @var array<string, string> */
     private array $defaultHeaders;
 
-    private ?Vault $defaultVault = null;
-
     /**
      * Create a new Lumen client instance.
      *
@@ -73,35 +71,13 @@ final class LumenClient
     }
 
     /**
-     * Set the default vault for subsequent operations.
-     *
-     * @param string $slug
-     * @return Vault
-     */
-    public function setVault(string $slug): Vault
-    {
-        $vault = $this->vaultResolver->resolveBySlug($slug);
-        $this->defaultVault = $vault;
-
-        return $vault;
-    }
-
-    /**
-     * Clear the default vault.
-     */
-    public function clearVault(): void
-    {
-        $this->defaultVault = null;
-    }
-
-    /**
      * Upload a file to a drive, using simple or multipart upload depending on file size.
      *
      * Automatically selects between simple upload (files <= 16 MiB) and multipart upload
      * (files > 16 MiB) based on the file size. Supports optional client-side encryption.
      *
      * @param string $filePath Path to the local file to be uploaded
-     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
+     * @param string $federatedId Federated Drive ID
      * @param array{
      *     parents?: string[],
      *     created_at?: string,
@@ -114,14 +90,14 @@ final class LumenClient
      *     vault?: string,
      *     encryption?: array<string, mixed>|string
      * } $options
-     * @return FileResource
+     * @return File
      *
      * @throws GuzzleException
      * @throws JsonException
      * @throws RandomException
      * @throws SodiumException
      */
-    public function upload(string $filePath, string $driveId, array $options = []): FileResource
+    public function upload(string $filePath, string $federatedId, array $options = []): File
     {
         $fileSize = filesize($filePath);
         if ($fileSize === false) {
@@ -130,17 +106,17 @@ final class LumenClient
 
         // When encryption is used, we allow blobs to be DEFAULT_CHUNK_SIZE + GCM_TAG_LEN for each part
         if ($fileSize <= self::DEFAULT_CHUNK_SIZE) {
-            return $this->simpleUpload($filePath, $driveId, $options);
+            return $this->simpleUpload($filePath, $federatedId, $options);
         }
 
-        return $this->multipartUpload($filePath, $driveId, $options)->getFile();
+        return $this->multipartUpload($filePath, $federatedId, $options)->getFile();
     }
 
     /**
      * Download a file from a vault.
      * Supports both downloading with a master key (Mode A) and with a shareable raw file key (Mode B).
      *
-     * @param string $fileId The ID of the file to download
+     * @param string $federatedId The ID of the file to download
      * @param string $destinationPath Path to save the downloaded file
      * @param array{
      *     vault?: string,
@@ -155,18 +131,12 @@ final class LumenClient
      * @throws RuntimeException
      * @throws SodiumException
      */
-    public function downloadFile(string $fileId, string $destinationPath, array $options = []): void
+    public function download(string $federatedId, string $destinationPath, array $options = []): void
     {
-        $vault = $this->resolveVault($options['vault'] ?? null);
-
-        // 1. Fetch file metadata
-        $response = $this->request('GET', $vault, sprintf('/v1/files/%s', $fileId), [
-            'headers' => $options['headers'] ?? [],
-        ]);
-        $metadata = $this->decodeJson($response);
+        $file = $this->retrieve($federatedId, $options);
 
         // 2. Fetch the file content
-        $contentResponse = $this->httpClient->request('GET', $metadata['download_url'], [
+        $contentResponse = $this->httpClient->request('GET', $file->getDownloadUrl(), [
             'headers' => $options['headers'] ?? [],
             'stream' => true,
         ]);
@@ -275,7 +245,7 @@ final class LumenClient
      * using AES-256-GCM with optional mnemonic-based key derivation.
      *
      * @param string $filePath Path to the local file to be uploaded
-     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
+     * @param FederatedId|string $federatedId Drive ID
      * @param array{
      *     parents?: string[],
      *     created_at?: string,
@@ -285,7 +255,7 @@ final class LumenClient
      *     vault?: string,
      *     encryption?: array<string, mixed>|string
      * } $options
-     * @return FileResource
+     * @return File
      *
      * @throws JsonException
      * @throws RandomException
@@ -293,16 +263,13 @@ final class LumenClient
      * @throws RuntimeException
      * @throws SodiumException
      */
-    public function simpleUpload(string $filePath, string $driveId, array $options = []): FileResource
+    public function simpleUpload(string $filePath, FederatedId|string $federatedId, array $options = []): File
     {
         if (!is_file($filePath)) {
             throw new RuntimeException(sprintf('File "%s" does not exist.', $filePath));
         }
 
-        $context = $this->resolveDriveContext($driveId, $options['vault'] ?? null);
-        $normalizedDriveId = $context['drive_id'];
-        $vault = $context['vault'];
-
+        $context = $this->resolveContext($federatedId, $options['vault'] ?? null);
         $encryptionOptions = $options['encryption'] ?? null;
 
         // If encryption is requested, prepare file salt/key and encrypted blob
@@ -364,7 +331,7 @@ final class LumenClient
             ],
             [
                 'name' => 'drive_id',
-                'contents' => $normalizedDriveId,
+                'contents' => $context->getId(),
             ],
             [
                 'name' => 'etag',
@@ -404,7 +371,7 @@ final class LumenClient
         }
 
         try {
-            $response = $this->request('POST', $vault, '/v1/files', [
+            $response = $this->request('POST', $context->getVault(), '/v1/files', [
                 'headers' => $requestHeaders,
                 'multipart' => $multipart,
             ]);
@@ -418,7 +385,7 @@ final class LumenClient
         }
 
         /** @noinspection PhpUnhandledExceptionInspection */
-        return new FileResource($this->decodeJson($response));
+        return new File($this->decodeJson($response));
     }
 
     /**
@@ -428,7 +395,7 @@ final class LumenClient
      * Each part must be uploaded separately using uploadMultipartPart(), then
      * the upload is finalized with completeMultipartUpload().
      *
-     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
+     * @param FederatedId|string $federatedId Federated Drive ID
      * @param string $fileName Name of the file to be created
      * @param int $fileSize Size of the file in bytes
      * @param array{
@@ -448,14 +415,12 @@ final class LumenClient
      * @throws JsonException
      * @throws GuzzleException
      */
-    public function initializeMultipartUpload(string $driveId, string $fileName, int $fileSize, array $options = []): MultipartUploadSession
+    public function initializeMultipartUpload(FederatedId|string $federatedId, string $fileName, int $fileSize, array $options = []): MultipartUploadSession
     {
-        $context = $this->resolveDriveContext($driveId, $options['vault'] ?? null);
-        $normalizedDriveId = $context['drive_id'];
-        $vault = $context['vault'];
+        $context = $this->resolveContext($federatedId, $options['vault'] ?? null);
 
         $payload = array_filter([
-            'drive_id' => $normalizedDriveId,
+            'drive_id' => $context->getId(),
             'file_name' => $fileName,
             'file_size' => $fileSize,
             'mime_type' => $options['mime_type'] ?? null,
@@ -468,7 +433,7 @@ final class LumenClient
             'modified_at' => $options['modified_at'] ?? null,
         ], static fn($value) => $value !== null);
 
-        $response = $this->request('POST', $vault, '/v1/files/multipart-upload/initialize', [
+        $response = $this->request('POST', $context->getVault(), '/v1/files/multipart-upload/initialize', [
             'headers' => $options['headers'] ?? [],
             'json' => $payload,
         ]);
@@ -478,7 +443,7 @@ final class LumenClient
         return new MultipartUploadSession(
             id: $data['id'],
             driveId: $data['drive_id'],
-            vault: $vault,
+            vault: $context->getVault(),
             attributes: $data,
         );
     }
@@ -504,7 +469,7 @@ final class LumenClient
      * @throws GuzzleException
      * @throws RuntimeException
      */
-    public function uploadMultipartPart(
+    private function uploadMultipartPart(
         MultipartUploadSession|string $sessionOrSessionId,
         int                           $partNumber,
         string                        $chunkContents,
@@ -631,7 +596,7 @@ final class LumenClient
      * and progress callbacks.
      *
      * @param string $filePath Path to the local file to be uploaded
-     * @param string $driveId Drive ID, optionally with vault slug suffix (e.g. "01jns7j69jfgj3fd5ntsp3sm07-kw2")
+     * @param string $federatedId Federated Drive ID
      * @param array{
      *     parents?: string[],
      *     created_at?: string,
@@ -651,7 +616,7 @@ final class LumenClient
      * @throws RuntimeException
      * @throws SodiumException
      */
-    public function multipartUpload(string $filePath, string $driveId, array $options = []): MultipartUploadResult
+    public function multipartUpload(string $filePath, string $federatedId, array $options = []): MultipartUploadResult
     {
         if (!is_file($filePath)) {
             throw new RuntimeException(sprintf('File "%s" does not exist.', $filePath));
@@ -695,7 +660,7 @@ final class LumenClient
             $fileName = LumenKeyManager::encryptMetadata($fileName, $fileKey, $baseIv);
         }
 
-        $session = $this->initializeMultipartUpload($driveId, $fileName, $realFileSize, [
+        $session = $this->initializeMultipartUpload($federatedId, $fileName, $realFileSize, [
             'mime_type' => $mimeType,
             'chunk_size' => $chunkSize,
             'base_iv' => $baseIv !== null ? base64_encode($baseIv) : null,
@@ -886,46 +851,13 @@ final class LumenClient
 
     /**
      * Resolve drive ID and vault from drive context.
-     *
-     * @param string $driveId
-     * @param string|null $preferredVaultSlug
-     * @return array{drive_id: string, vault: Vault}
      */
-    private function resolveDriveContext(string $driveId, ?string $preferredVaultSlug): array
+    private function resolveContext(FederatedId|string $federatedId, ?string $preferredVaultSlug): Context
     {
-        [$normalizedDriveId, $embeddedSlug] = $this->extractVaultFromDriveId($driveId);
-        $vault = $this->resolveVault($preferredVaultSlug ?? $embeddedSlug);
+        $federatedId = FederatedId::parse($federatedId);
+        $vault = $this->resolveVault($preferredVaultSlug ?? $federatedId->getSlug());
 
-        return [
-            'drive_id' => $normalizedDriveId,
-            'vault' => $vault,
-        ];
-    }
-
-    /**
-     * Extract vault slug from drive ID if present.
-     *
-     * Drive IDs can optionally include a vault slug suffix in the format:
-     * {drive_id}-{vault_slug}
-     *
-     * @param string $driveId
-     * @return array{0: string, 1: string|null}
-     */
-    private function extractVaultFromDriveId(string $driveId): array
-    {
-        $separator = strrpos($driveId, '-');
-        if ($separator === false) {
-            return [$driveId, null];
-        }
-
-        $maybeVault = substr($driveId, $separator + 1);
-        $maybeDrive = substr($driveId, 0, $separator);
-
-        if ($maybeVault === '' || $maybeDrive === '') {
-            return [$driveId, null];
-        }
-
-        return [$maybeDrive, $maybeVault];
+        return new Context(id: $federatedId->getId(), vault: $vault);
     }
 
     /**
@@ -944,18 +876,10 @@ final class LumenClient
         }
 
         if ($slug !== null) {
-            if ($this->defaultVault !== null && strcasecmp($this->defaultVault->slug, $slug) === 0) {
-                return $this->defaultVault;
-            }
-
             return $this->vaultResolver->resolveBySlug($slug);
         }
 
-        if ($this->defaultVault !== null) {
-            return $this->defaultVault;
-        }
-
-        throw new RuntimeException('No vault specified. Call setVault(), pass a vault option, or annotate the drive ID as {id}-{vault}.');
+        throw new RuntimeException('No vault specified. Pass a vault option, or annotate the ID as {id}-{vault}.');
     }
 
     /**
@@ -1054,20 +978,40 @@ final class LumenClient
      * Generates a shareable link containing the raw file decryption key in the URL fragment.
      * The file key is encoded safely using Base64URL encoding so it does not interfere with the URL structure.
      *
-     * @param string $baseUrl The base URL of the application or viewing endpoint.
-     * @param string $fileId The unique identifier of the file to be shared including vault slug (e.g. "abc123-kw2").
-     * @param string $rawFileKey The raw 32-byte encryption key for the file.
-     * @return string The formatted URL with the key securely in the fragment.
+     * @param File $file The unique identifier of the file to be shared including vault slug (e.g. "abc123-kw2").
+     * @param string|null $baseUrl The base URL of the application or viewing endpoint.
+     * @return ShareableLink The formatted URL with the key securely in the fragment.
      */
-    public function generateShareableLink(string $baseUrl, string $fileId, #[SensitiveParameter] string $rawFileKey): string
+    public function generateShareableLink(File $file, string|null $baseUrl = null): ShareableLink
     {
         // 1. Ensure a Base64-URL safe representation (no +, /, or trailing =)
-        $base64UrlKey = rtrim(strtr(base64_encode($rawFileKey), '+/', '-_'), '=');
+        $base64UrlKey = rtrim(strtr(base64_encode($file->getEncryption()->getRawWrappedKey()), '+/', '-_'), '=');
 
         // 2. Ensure baseUrl doesn't end with a slash
-        $baseUrl = rtrim($baseUrl, '/');
+        $baseUrl = rtrim($baseUrl ?? ShareableLink::baseUrl(), '/');
 
         // 3. Assemble the secure link
-        return sprintf('%s/files/%s/view#%s', $baseUrl, $fileId, $base64UrlKey);
+        return new ShareableLink(
+            url: sprintf('%s/files/%s/view', $baseUrl, $file->getFederatedId()),
+            encodedKey: $base64UrlKey
+        );
+    }
+
+    /**
+     * Retrieve file metadata and details.
+     *
+     * @throws GuzzleException
+     * @throws JsonException
+     */
+    public function retrieve(FederatedId|string $federatedId, array $options = []): File
+    {
+        $context = $this->resolveContext($federatedId, $options['vault'] ?? null);
+
+        $response = $this->request('GET', $context->getVault(), sprintf('/v1/files/%s', $context->getId()), [
+            'headers' => $options['headers'] ?? [],
+        ]);
+        $metadata = $this->decodeJson($response);
+
+        return new File($metadata);
     }
 }
