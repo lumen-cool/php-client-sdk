@@ -441,8 +441,8 @@ final class LumenClient
         $data = $this->decodeJson($response);
 
         return new MultipartUploadSession(
-            id: $data['id'],
-            driveId: $data['drive_id'],
+            id: $data['session']['id'],
+            driveId: $data['file_preview']['drive_id'],
             vault: $context->getVault(),
             attributes: $data,
         );
