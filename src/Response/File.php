@@ -76,4 +76,9 @@ final readonly class File
     {
         return $this->attributes;
     }
+
+    public function getChunkSize(): ?int
+    {
+        return isset($this->attributes['chunk_size']) ? (int)$this->attributes['chunk_size'] : null;
+    }
 }

@@ -186,7 +186,7 @@ final class LumenClient
             throw new RuntimeException("Cannot open destination path for writing: $destinationPath");
         }
 
-        $serverChunkSize = $encryption->getChunkSize() ?? self::DEFAULT_CHUNK_SIZE;
+        $serverChunkSize = $encryption->getChunkSize() ?? $file->getSize();
         $chunkSize = $serverChunkSize + LumenKeyManager::GCM_TAG_LEN;
 
         try {
@@ -982,17 +982,20 @@ final class LumenClient
      * @param string|null $baseUrl The base URL of the application or viewing endpoint.
      * @return ShareableLink The formatted URL with the key securely in the fragment.
      */
-    public function generateShareableLink(File $file, #[SensitiveParameter] string $masterKey, string|null $baseUrl = null): ShareableLink
+    public function generateShareableLink(File $file, #[SensitiveParameter] string|null $masterKey, string|null $baseUrl = null): ShareableLink
     {
-        $base64UrlKey = rtrim(strtr(base64_encode(
-            string: LumenKeyManager::unwrapFileKey(
-                wrappedKeyData: base64_decode(
-                    string: $file->getEncryption()->getWrappedKey(),
-                    strict: true,
-                ),
-                masterKey: $masterKey
-            )
-        ), '+/', '-_'), '=');
+        $base64UrlKey = null;
+        if ($file->getEncryption() && $file->getEncryption()->getWrappedKey() && $masterKey) {
+            $base64UrlKey = rtrim(strtr(base64_encode(
+                string: LumenKeyManager::unwrapFileKey(
+                    wrappedKeyData: base64_decode(
+                        string: $file->getEncryption()->getWrappedKey(),
+                        strict: true,
+                    ),
+                    masterKey: $masterKey
+                )
+            ), '+/', '-_'), '=');
+        }
 
         $baseUrl = rtrim($baseUrl ?? ShareableLink::baseUrl(), '/');
 
