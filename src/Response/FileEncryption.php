@@ -32,6 +32,12 @@ readonly class FileEncryption
         return isset($this->attributes['base_iv']) ? (string)$this->attributes['base_iv'] : null;
     }
 
+    /**
+     * Returns the plaintext chunk size used for encryption.
+     * This is the size of each chunk of data before encryption overhead is added.
+     *
+     * @return int|null
+     */
     public function getChunkSize(): ?int
     {
         return isset($this->attributes['chunk']) ? (int)$this->attributes['chunk'] : null;

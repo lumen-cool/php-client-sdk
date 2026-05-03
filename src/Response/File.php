@@ -47,9 +47,26 @@ final readonly class File
         return isset($this->attributes['mime_type']) ? (string)$this->attributes['mime_type'] : null;
     }
 
+    /**
+     * Represents the original file size before encryption.
+     * When encryption is used, the actual stored file size may be larger due to encryption overhead.
+     *
+     * @return int|null
+     */
     public function getSize(): ?int
     {
         return isset($this->attributes['size']) ? (int)$this->attributes['size'] : null;
+    }
+
+    /**
+     * When multipart upload is used with encryption, the chunk size in the file preview will be the original chunk size + GCM tag length.
+     * To get the original chunk size, call $file->getEncryption()->getChunkSize() instead of $file->getChunkSize().
+     *
+     * @return int|null
+     */
+    public function getChunkSize(): ?int
+    {
+        return isset($this->attributes['chunk_size']) ? (int)$this->attributes['chunk_size'] : null;
     }
 
     public function getDownloadUrl(): ?string
@@ -75,10 +92,5 @@ final readonly class File
     public function toArray(): array
     {
         return $this->attributes;
-    }
-
-    public function getChunkSize(): ?int
-    {
-        return isset($this->attributes['chunk_size']) ? (int)$this->attributes['chunk_size'] : null;
     }
 }
