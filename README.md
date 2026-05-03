@@ -1,9 +1,9 @@
 # Lumen PHP Client SDK
 
-A lightweight PHP 8.2+ SDK for interacting with Lumen Files uploads. It provides:
+A lightweight PHP 8.4+ SDK for interacting with Lumen Files uploads. It provides:
 
 * A `LumenVaultResolver` that can hydrate vault definitions from the public registry and from custom overrides.
-* A `LumenClient` that automatically targets the right vault, either from a default selection or from the drive ID annotation (`{drive}-{vault}`).
+* A `LumenClient` that automatically targets the right vault from the drive ID annotation (`{drive}-{vault}`).
 * Strongly-typed response objects for both simple and multipart uploads.
 
 ## Installation
