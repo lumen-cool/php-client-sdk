@@ -350,9 +350,9 @@ final class LumenKeyManager
      * Returns a base64-encoded blob of (iv || ciphertext || tag).
      * @throws RandomException
      */
-    public static function encryptMetadata(string $plaintext, #[SensitiveParameter] string $fileKey, string $fileSalt): string
+    public static function encryptMetadata(string $plaintext, #[SensitiveParameter] string $fileKey, string $baseIv): string
     {
-        $metaKey = self::deriveMetadataKey($fileKey, $fileSalt);
+        $metaKey = self::deriveMetadataKey($fileKey, $baseIv);
         $iv = random_bytes(self::GCM_IV_LEN);
         $tag = '';
         $ct = openssl_encrypt($plaintext, 'aes-256-gcm', $metaKey, OPENSSL_RAW_DATA, $iv, $tag, self::INFO_META_WRAP, self::GCM_TAG_LEN);

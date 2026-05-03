@@ -142,7 +142,7 @@ final class LumenClient
         ]);
         $contentStream = $contentResponse->getBody();
 
-        if (empty($metadata['encryption'])) {
+        if (!$file->getEncryption()) {
             // Unencrypted file, stream directly to disk
             $dest = Utils::streamFor(fopen($destinationPath, 'wb'));
             Utils::copyToStream($contentStream, $dest);
@@ -150,8 +150,8 @@ final class LumenClient
         }
 
         // Handle Encrypted File
-        $encMeta = $metadata['encryption'];
-        $baseIv = isset($encMeta['base_iv']) ? base64_decode($encMeta['base_iv'], true) : null;
+        $encryption = $file->getEncryption();
+        $baseIv = $encryption->getBaseIV() ? base64_decode($encryption->getBaseIV(), true) : null;
         if ($baseIv === false || $baseIv === null) {
             throw new RuntimeException("Missing or invalid base_iv in file metadata.");
         }
@@ -171,7 +171,7 @@ final class LumenClient
         } // Mode A: Authenticated Owner (Master Key unwraps wrapped_key)
         else if (isset($options['encryption'])) {
             $masterKey = $this->resolveMasterKeyFromEncryptionOptions($options['encryption']);
-            $wrappedKey = isset($encMeta['wrapped_key']) ? base64_decode($encMeta['wrapped_key'], true) : null;
+            $wrappedKey = $encryption->getWrappedKey() ? base64_decode($encryption->getWrappedKey(), true) : null;
             if ($wrappedKey === false || $wrappedKey === null) {
                 throw new RuntimeException("Missing or invalid wrapped_key in file metadata.");
             }
@@ -186,7 +186,7 @@ final class LumenClient
             throw new RuntimeException("Cannot open destination path for writing: $destinationPath");
         }
 
-        $serverChunkSize = (int)($encMeta['chunk'] ?? self::DEFAULT_CHUNK_SIZE);
+        $serverChunkSize = $encryption->getChunkSize() ?? self::DEFAULT_CHUNK_SIZE;
         $chunkSize = $serverChunkSize + LumenKeyManager::GCM_TAG_LEN;
 
         try {
@@ -720,7 +720,7 @@ final class LumenClient
                 $bytesUploaded += ($isEncrypted ? strlen($blob) : strlen($chunk));
 
                 if (isset($options['on_progress']) && is_callable($options['on_progress'])) {
-                    $options['on_progress']($partNumber, $bytesUploaded - ($isEncrypted ? strlen($blob) : strlen($chunk)), $bytesUploaded, (int)$fileSize);
+                    $options['on_progress']($partNumber, $bytesUploaded - ($isEncrypted ? strlen($blob) : strlen($chunk)), $bytesUploaded, $realFileSize);
                 }
 
                 ++$partNumber;
@@ -982,15 +982,20 @@ final class LumenClient
      * @param string|null $baseUrl The base URL of the application or viewing endpoint.
      * @return ShareableLink The formatted URL with the key securely in the fragment.
      */
-    public function generateShareableLink(File $file, string|null $baseUrl = null): ShareableLink
+    public function generateShareableLink(File $file, #[SensitiveParameter] string $masterKey, string|null $baseUrl = null): ShareableLink
     {
-        // 1. Ensure a Base64-URL safe representation (no +, /, or trailing =)
-        $base64UrlKey = rtrim(strtr(base64_encode($file->getEncryption()->getRawWrappedKey()), '+/', '-_'), '=');
+        $base64UrlKey = rtrim(strtr(base64_encode(
+            string: LumenKeyManager::unwrapFileKey(
+                wrappedKeyData: base64_decode(
+                    string: $file->getEncryption()->getWrappedKey(),
+                    strict: true,
+                ),
+                masterKey: $masterKey
+            )
+        ), '+/', '-_'), '=');
 
-        // 2. Ensure baseUrl doesn't end with a slash
         $baseUrl = rtrim($baseUrl ?? ShareableLink::baseUrl(), '/');
 
-        // 3. Assemble the secure link
         return new ShareableLink(
             url: sprintf('%s/files/%s/view', $baseUrl, $file->getFederatedId()),
             encodedKey: $base64UrlKey

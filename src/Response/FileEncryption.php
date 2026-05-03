@@ -27,27 +27,9 @@ readonly class FileEncryption
         return isset($this->attributes['wrapped_key']) ? (string)$this->attributes['wrapped_key'] : null;
     }
 
-    public function getRawWrappedKey(): ?string
-    {
-        $wrappedKey = $this->getWrappedKey();
-        if ($wrappedKey === null) {
-            return null;
-        }
-        return base64_decode($wrappedKey, true);
-    }
-
     public function getBaseIV(): ?string
     {
         return isset($this->attributes['base_iv']) ? (string)$this->attributes['base_iv'] : null;
-    }
-
-    public function getRawBaseIV(): ?string
-    {
-        $baseIV = $this->getBaseIV();
-        if ($baseIV === null) {
-            return null;
-        }
-        return base64_decode($baseIV, true);
     }
 
     public function getChunkSize(): ?int
